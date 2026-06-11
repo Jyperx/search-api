@@ -379,3 +379,75 @@ def get_promotions():
     conn.close()
     return {"results": [dict(row) for row in rows]}
 
+# ==========================================
+# FIREBASE REAL-TIME LISTENERS
+# ==========================================
+import threading
+
+sqlite_lock = threading.Lock()
+
+def on_snapshot_stores(col_snapshot, changes, read_time):
+    with sqlite_lock:
+        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+        c = conn.cursor()
+        for change in changes:
+            doc = change.document
+            s_id = doc.id
+            s_data = doc.to_dict()
+            if change.type.name in ['ADDED', 'MODIFIED']:
+                c.execute("""
+                    INSERT OR REPLACE INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+                """, (
+                    s_id, 'store', s_id, 
+                    s_data.get('name', ''), 
+                    s_data.get('category', ''), 
+                    '', '', '', s_data.get('imageUrl', '')
+                ))
+            elif change.type.name == 'REMOVED':
+                c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
+        conn.commit()
+        conn.close()
+
+def on_snapshot_products(col_snapshot, changes, read_time):
+    with sqlite_lock:
+        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+        c = conn.cursor()
+        for change in changes:
+            doc = change.document
+            p_id = doc.id
+            p_data = doc.to_dict()
+            s_id = doc.reference.parent.parent.id
+            
+            if change.type.name in ['ADDED', 'MODIFIED']:
+                c.execute("""
+                    INSERT OR REPLACE INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    p_id, 'product', s_id, 
+                    p_data.get('name', ''), 
+                    p_data.get('category', ''), 
+                    p_data.get('description', ''), 
+                    str(p_data.get('price', '')),
+                    p_data.get('icon', ''),
+                    p_data.get('imageUrl', ''),
+                    1 if p_data.get('onSale') else 0,
+                    p_data.get('salePrice', None)
+                ))
+            elif change.type.name == 'REMOVED':
+                c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (p_id,))
+        conn.commit()
+        conn.close()
+
+def start_firestore_listeners():
+    if not db:
+        print("Firebase no inicializado. No se iniciaron los listeners.")
+        return
+    print("Iniciando listeners de Firestore en segundo plano...")
+    db.collection("stores").on_snapshot(on_snapshot_stores)
+    db.collection_group("products").on_snapshot(on_snapshot_products)
+
+@app.on_event("startup")
+def startup_event():
+    listener_thread = threading.Thread(target=start_firestore_listeners, daemon=True)
+    listener_thread.start()
