@@ -51,13 +51,13 @@ def init_db():
     # FTS5 crea una tabla virtual súper rápida para texto
     # type: 'store' o 'product'
     try:
-        c.execute("SELECT imageUrl FROM search_index LIMIT 1")
+        c.execute("SELECT salePrice FROM search_index LIMIT 1")
     except sqlite3.OperationalError:
         c.execute("DROP TABLE IF EXISTS search_index")
         
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-            id, type, storeId, name, category, description, price, icon, imageUrl UNINDEXED
+            id, type, storeId, name, category, description, price, icon, imageUrl UNINDEXED, onSale UNINDEXED, salePrice UNINDEXED
         )
     ''')
     
@@ -188,8 +188,8 @@ def sync_database():
         
         # Insertar el comercio en el índice
         c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
         """, (
             s_id, 'store', s_id, 
             s_data.get('name', ''), 
@@ -203,8 +203,8 @@ def sync_database():
         for product in products_ref.stream():
             p_data = product.to_dict()
             c.execute("""
-                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 product.id, 'product', s_id, 
                 p_data.get('name', ''), 
@@ -212,7 +212,9 @@ def sync_database():
                 p_data.get('description', ''), 
                 str(p_data.get('price', '')),
                 p_data.get('icon', ''),
-                p_data.get('imageUrl', '')
+                p_data.get('imageUrl', ''),
+                1 if p_data.get('onSale') else 0,
+                p_data.get('salePrice', None)
             ))
             count += 1
 
@@ -241,8 +243,8 @@ def sync_store(store_id: str):
     if store_doc.exists:
         s_data = store_doc.to_dict()
         c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
         """, (
             store_id, 'store', store_id, 
             s_data.get('name', ''), 
@@ -256,8 +258,8 @@ def sync_store(store_id: str):
         for product in products_ref.stream():
             p_data = product.to_dict()
             c.execute("""
-                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 product.id, 'product', store_id, 
                 p_data.get('name', ''), 
@@ -265,7 +267,9 @@ def sync_store(store_id: str):
                 p_data.get('description', ''), 
                 str(p_data.get('price', '')),
                 p_data.get('icon', ''),
-                p_data.get('imageUrl', '')
+                p_data.get('imageUrl', ''),
+                1 if p_data.get('onSale') else 0,
+                p_data.get('salePrice', None)
             ))
             count += 1
 
@@ -304,7 +308,7 @@ def search(q: str = ""):
     try:
         # Buscamos en todas las columnas y ordenamos por "rank" (relevancia automática de SQLite FTS5)
         c.execute("""
-            SELECT id, type, storeId, name, category, description, price, icon, imageUrl
+            SELECT id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice
             FROM search_index 
             WHERE search_index MATCH ?
             ORDER BY rank
@@ -316,7 +320,7 @@ def search(q: str = ""):
         
         # FUZZY FALLBACK (Si no encontró nada y la query tiene al menos 3 letras)
         if len(results) == 0 and len(safe_q) >= 3:
-            c.execute("SELECT id, type, storeId, name, category, description, price, icon, imageUrl FROM search_index")
+            c.execute("SELECT id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice FROM search_index")
             all_items = c.fetchall()
             
             if all_items:
@@ -354,7 +358,7 @@ def get_popular_products():
     c = conn.cursor()
     # Tomamos algunos productos aleatorios como "populares" para el MVP
     c.execute("""
-        SELECT id, type, storeId, name, category, description, price, icon, imageUrl
+        SELECT id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice
         FROM search_index 
         WHERE type = 'product'
         ORDER BY RANDOM()
