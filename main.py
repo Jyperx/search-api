@@ -414,7 +414,7 @@ def on_snapshot_stores(col_snapshot, changes, read_time):
                     s_data.get('name', ''), 
                     s_data.get('category', ''), 
                     '', '', '', s_data.get('imageUrl', '')
-                ))
+                )) 
             elif change.type.name == 'REMOVED':
                 c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
         conn.commit()
