@@ -115,19 +115,19 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                     notify_active_drivers(
                         "¡Nuevo Punto Favor!", 
                         "Alguien necesita un favor cerca. ¡Abre el radar!",
-                        {"orderId": doc_id}
+                        {"orderId": doc_id, "role": "driver"}
                     )
                 else:
                     # Notificar al comercio
                     store_id = data.get('storeId')
                     token = get_user_push_token(store_id)
-                    send_push_notification(token, "¡Nuevo Pedido!", "Tienes un nuevo pedido pendiente por revisar.", {"orderId": doc_id})
+                    send_push_notification(token, "¡Nuevo Pedido!", "Tienes un nuevo pedido pendiente por revisar.", {"orderId": doc_id, "role": "commerce"})
 
             # 2. Comercio acepta (Preparando)
             elif status == 'accepted_by_commerce':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
-                send_push_notification(token, "Preparando tu pedido \U0001f373", "El comercio ha comenzado a preparar tu orden.", {"orderId": doc_id})
+                send_push_notification(token, "Preparando tu pedido \U0001f373", "El comercio ha comenzado a preparar tu orden.", {"orderId": doc_id, "role": "client"})
 
             # 3. Listo para recoger
             elif status == 'ready':
@@ -135,30 +135,30 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                 notify_active_drivers(
                     "¡Pedido Listo para Recoger!", 
                     f"Hay un pedido listo en {data.get('storeName', 'un comercio')}. ¡Abre el radar!",
-                    {"orderId": doc_id}
+                    {"orderId": doc_id, "role": "driver"}
                 )
                 # Notificar al cliente que ya casi
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
-                send_push_notification(token, "¡Tu pedido está listo!", "Estamos buscando un repartidor para llevártelo.", {"orderId": doc_id})
+                send_push_notification(token, "¡Tu pedido está listo!", "Estamos buscando un repartidor para llevártelo.", {"orderId": doc_id, "role": "client"})
 
             # 4. Repartidor asignado
             elif status == 'accepted_by_driver':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
-                send_push_notification(token, "¡Repartidor asignado!", "Un repartidor va en camino a recoger tu pedido.", {"orderId": doc_id})
+                send_push_notification(token, "¡Repartidor asignado!", "Un repartidor va en camino a recoger tu pedido.", {"orderId": doc_id, "role": "client"})
 
             # 5. Pedido recogido (en camino al cliente)
             elif status == 'picked_up':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
-                send_push_notification(token, "¡Tu pedido va en camino! \U0001f6f5", "El repartidor ha recogido tu pedido y se dirige hacia ti.", {"orderId": doc_id})
+                send_push_notification(token, "¡Tu pedido va en camino! \U0001f6f5", "El repartidor ha recogido tu pedido y se dirige hacia ti.", {"orderId": doc_id, "role": "client"})
 
             # 6. Entregado
             elif status == 'delivered':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
-                send_push_notification(token, "¡Pedido Entregado! \U0001f389", "Gracias por usar Punto. ¡Disfruta!", {"orderId": doc_id})
+                send_push_notification(token, "¡Pedido Entregado! \U0001f389", "Gracias por usar Punto. ¡Disfruta!", {"orderId": doc_id, "role": "client"})
 
 def start_listener():
     print("Iniciando Listener de Notificaciones (orders)...")
