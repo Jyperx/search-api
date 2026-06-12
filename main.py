@@ -459,6 +459,10 @@ def start_firestore_listeners():
     print("Iniciando listeners de Firestore en segundo plano...")
     db.collection("stores").on_snapshot(on_snapshot_stores)
     db.collection_group("products").on_snapshot(on_snapshot_products)
+    
+    # Iniciar listener de notificaciones
+    import notifications_server
+    db.collection("orders").on_snapshot(notifications_server.on_order_snapshot)
 
 @app.on_event("startup")
 def startup_event():
