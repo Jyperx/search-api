@@ -157,19 +157,35 @@ def on_order_snapshot(col_snapshot, changes, read_time):
             elif status == 'accepted_by_driver':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
-                send_push_notification(token, "¡Repartidor asignado!", "Un repartidor va en camino a recoger tu pedido.", {"orderId": doc_id, "role": "client"})
+                if is_favor:
+                    send_push_notification(token, "¡Repartidor asignado! \U0001f3c3", "Un repartidor se dirige a realizar tus compras.", {"orderId": doc_id, "role": "client"})
+                else:
+                    send_push_notification(token, "¡Repartidor asignado!", "Un repartidor va en camino a recoger tu pedido.", {"orderId": doc_id, "role": "client"})
 
             # 5. Pedido recogido (en camino al cliente)
             elif status == 'picked_up':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
-                send_push_notification(token, "¡Tu pedido va en camino! \U0001f6f5", "El repartidor ha recogido tu pedido y se dirige hacia ti.", {"orderId": doc_id, "role": "client"})
+                if is_favor:
+                    send_push_notification(token, "¡Comprando! \U0001f6d2", "El repartidor está en el establecimiento comprando lo que pediste.", {"orderId": doc_id, "role": "client"})
+                else:
+                    send_push_notification(token, "¡Tu pedido va en camino! \U0001f6f5", "El repartidor ha recogido tu pedido y se dirige hacia ti.", {"orderId": doc_id, "role": "client"})
+
+            # 5.5 Favor en camino (después de comprar)
+            elif status == 'on_the_way':
+                if is_favor:
+                    user_id = data.get('userId')
+                    token = get_user_push_token(user_id)
+                    send_push_notification(token, "¡Compras terminadas! \U0001f6f5", "El repartidor ya tiene tus cosas y va en camino hacia ti.", {"orderId": doc_id, "role": "client"})
 
             # 6. Entregado
             elif status == 'delivered':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
-                send_push_notification(token, "¡Pedido Entregado! \U0001f389", "Gracias por usar Punto. ¡Disfruta!", {"orderId": doc_id, "role": "client"})
+                if is_favor:
+                    send_push_notification(token, "¡Favor Completado! \U0001f389", "Tu encargo ha sido entregado exitosamente.", {"orderId": doc_id, "role": "client"})
+                else:
+                    send_push_notification(token, "¡Pedido Entregado! \U0001f389", "Gracias por usar Punto. ¡Disfruta!", {"orderId": doc_id, "role": "client"})
 
 def start_listener():
     print("Iniciando Listener de Notificaciones (orders)...")
