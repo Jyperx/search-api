@@ -44,7 +44,6 @@ def send_push_notification(expo_push_token, title, body, data=None):
         "body": body,
         "data": data or {}
     }
-
     try:
         response = requests.post(
             'https://exp.host/--/api/v2/push/send',
@@ -55,7 +54,7 @@ def send_push_notification(expo_push_token, title, body, data=None):
             },
             json=message
         )
-        print(f"Push enviado a {expo_push_token}: {response.status_code}")
+        print(f"Push enviado a {expo_push_token} (Role: {data.get('role') if data else 'N/A'}, Order: {data.get('orderId') if data else 'N/A'}): {response.status_code}")
     except Exception as e:
         print(f"Error enviando push: {e}")
 
@@ -90,6 +89,8 @@ def notify_active_drivers(title, body, data=None, exclude_user_id=None):
         # Eliminar tokens duplicados convirtiendo a set
         unique_tokens = list(set(tokens))
         
+        print(f"Enviando push a {len(unique_tokens)} repartidores únicos...")
+        
         for token in unique_tokens:
             send_push_notification(token, title, body, data)
     except Exception as e:
@@ -117,6 +118,40 @@ def on_order_snapshot(col_snapshot, changes, read_time):
         
         if change.type.name in ['ADDED', 'MODIFIED']:
             
+            # --- RESERVAS ---
+            if data.get('type') == 'reservation':
+                if change.type.name == 'ADDED' and status in ['pending_approval', 'approved_awaiting_payment']:
+                    store_id = data.get('storeId')
+                    token = get_user_push_token(store_id)
+                    send_push_notification(token, "¡Nueva Reserva!", "Alguien ha agendado un servicio contigo.", {"orderId": doc_id, "role": "commerce"})
+                elif change.type.name == 'MODIFIED':
+                    if status == 'approved_awaiting_payment':
+                        user_id = data.get('userId')
+                        token = get_user_push_token(user_id)
+                        send_push_notification(token, "¡Reserva Aprobada! 💳", "Tu reserva ha sido aprobada. Procede con el pago para confirmarla.", {"orderId": doc_id, "role": "client"})
+                    elif status == 'confirmed':
+                        # Notificar al cliente
+                        user_id = data.get('userId')
+                        token = get_user_push_token(user_id)
+                        send_push_notification(token, "¡Reserva Confirmada! ✅", "Tu reserva está asegurada. ¡Te esperamos!", {"orderId": doc_id, "role": "client"})
+                        
+                        # Notificar al comercio
+                        store_id = data.get('storeId')
+                        store_token = get_user_push_token(store_id)
+                        send_push_notification(store_token, "¡Pago Recibido! ✅", f"El cliente {data.get('userName', 'Cliente')} ha confirmado y pagado su reserva.", {"orderId": doc_id, "role": "commerce"})
+                    elif status == 'cancelled':
+                        # Notificar al cliente
+                        user_id = data.get('userId')
+                        token = get_user_push_token(user_id)
+                        send_push_notification(token, "Reserva Cancelada ❌", "La reserva no pudo ser completada.", {"orderId": doc_id, "role": "client"})
+                        
+                        # Notificar al comercio
+                        store_id = data.get('storeId')
+                        store_token = get_user_push_token(store_id)
+                        send_push_notification(store_token, "Reserva Cancelada ❌", f"La reserva de {data.get('userName', 'Cliente')} ha sido cancelada.", {"orderId": doc_id, "role": "commerce"})
+                continue # Evitar procesar el resto de la lógica de órdenes de comida
+            
+            # --- PEDIDOS DE COMIDA/FAVORES ---
             # 1. Nuevo Pedido Recibido
             if status == 'received':
                 if is_favor:
