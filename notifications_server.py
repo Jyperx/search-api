@@ -77,8 +77,10 @@ def notify_active_drivers(title, body, data=None, exclude_user_id=None):
         tokens = []
         for d in drivers:
             # No enviar la notificación al mismo usuario que creó el pedido
+            # Excepto si estamos en desarrollo (ALLOW_SELF_ORDERS_DEV=true)
             if exclude_user_id and d.id == exclude_user_id:
-                continue
+                if os.getenv("ALLOW_SELF_ORDERS_DEV", "false").lower() != "true":
+                    continue
                 
             t = d.to_dict().get('expoPushToken')
             if t and t.startswith('ExponentPushToken'):
