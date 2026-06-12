@@ -308,8 +308,11 @@ def search(q: str = ""):
     try:
         # Buscamos en todas las columnas y ordenamos por "rank" (relevancia automática de SQLite FTS5)
         c.execute("""
-            SELECT id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice
-            FROM search_index 
+            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice,
+                   s.name as storeName
+            FROM search_index p
+            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
             WHERE search_index MATCH ?
             ORDER BY rank
             LIMIT 50
@@ -320,7 +323,13 @@ def search(q: str = ""):
         
         # FUZZY FALLBACK (Si no encontró nada y la query tiene al menos 3 letras)
         if len(results) == 0 and len(safe_q) >= 3:
-            c.execute("SELECT id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice FROM search_index")
+            c.execute("""
+                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice,
+                       s.name as storeName
+                FROM search_index p
+                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+            """)
             all_items = c.fetchall()
             
             if all_items:
@@ -337,9 +346,6 @@ def search(q: str = ""):
                             results.append(dict(item))
                             seen_ids.add(item["id"])
                     
-                    # (Opcional) Ordenar para que el match más perfecto de difflib salga primero
-                    # difflib.get_close_matches ya los devuelve en orden de mejor a peor,
-                    # así que mapeamos ese orden a los resultados:
                     results.sort(key=lambda x: matches.index(x["name"]) if x["name"] in matches else 999)
                     
     except Exception as e:
@@ -356,11 +362,14 @@ def get_popular_products():
     conn = sqlite3.connect(SQLITE_DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
-    # Tomamos algunos productos aleatorios como "populares" para el MVP
+    # Hacemos JOIN con el registro de la tienda para obtener su nombre
     c.execute("""
-        SELECT id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice
-        FROM search_index 
-        WHERE type = 'product'
+        SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+               p.price, p.icon, p.imageUrl, p.onSale, p.salePrice,
+               s.name as storeName
+        FROM search_index p
+        LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+        WHERE p.type = 'product'
         ORDER BY RANDOM()
         LIMIT 6
     """)
