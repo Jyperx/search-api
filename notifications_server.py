@@ -81,7 +81,10 @@ def notify_active_drivers(title, body, data=None):
                 tokens.append(t)
         
         # Expo permite enviar mensajes en lote (batch) pero para simplicidad iteramos
-        for token in tokens:
+        # Eliminar tokens duplicados convirtiendo a set
+        unique_tokens = list(set(tokens))
+        
+        for token in unique_tokens:
             send_push_notification(token, title, body, data)
     except Exception as e:
         print(f"Error enviando push a repartidores: {e}")
