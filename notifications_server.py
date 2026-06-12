@@ -9,25 +9,25 @@ from firebase_admin import credentials, firestore
 
 # Configuración Inicial
 SERVICE_ACCOUNT_FILE = 'serviceAccountKey.json'
-db = None
 
-if os.getenv('FIREBASE_SERVICE_ACCOUNT'):
-    try:
-        cred_dict = json.loads(os.getenv('FIREBASE_SERVICE_ACCOUNT'))
-        cred = credentials.Certificate(cred_dict)
+if not firebase_admin._apps:
+    if os.getenv('FIREBASE_SERVICE_ACCOUNT'):
+        try:
+            cred_dict = json.loads(os.getenv('FIREBASE_SERVICE_ACCOUNT'))
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+            print("Firebase inicializado para Notificaciones (ENV).")
+        except Exception as e:
+            print(f"Error parseando FIREBASE_SERVICE_ACCOUNT: {e}")
+    elif os.path.exists(SERVICE_ACCOUNT_FILE):
+        cred = credentials.Certificate(SERVICE_ACCOUNT_FILE)
         firebase_admin.initialize_app(cred)
-        db = firestore.client()
-        print("Firebase inicializado para Notificaciones (ENV).")
-    except Exception as e:
-        print(f"Error parseando FIREBASE_SERVICE_ACCOUNT: {e}")
-elif os.path.exists(SERVICE_ACCOUNT_FILE):
-    cred = credentials.Certificate(SERVICE_ACCOUNT_FILE)
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
-    print("Firebase inicializado para Notificaciones (Local).")
-else:
-    print(f"ADVERTENCIA: No se encontró credenciales. Saliendo...")
-    exit(1)
+        print("Firebase inicializado para Notificaciones (Local).")
+    else:
+        print(f"ADVERTENCIA: No se encontró credenciales. Saliendo...")
+        exit(1)
+
+db = firestore.client()
 
 # Tiempo de inicio para ignorar eventos pasados
 start_time = time.time()
