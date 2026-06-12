@@ -404,8 +404,10 @@ def on_snapshot_stores(col_snapshot, changes, read_time):
             s_id = doc.id
             s_data = doc.to_dict()
             if change.type.name in ['ADDED', 'MODIFIED']:
+                # FTS5 no soporta UNIQUE constraints, así que primero borramos explícitamente
+                c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
                 c.execute("""
-                    INSERT OR REPLACE INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
+                    INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
                 """, (
                     s_id, 'store', s_id, 
@@ -429,8 +431,10 @@ def on_snapshot_products(col_snapshot, changes, read_time):
             s_id = doc.reference.parent.parent.id
             
             if change.type.name in ['ADDED', 'MODIFIED']:
+                # FTS5 no soporta UNIQUE constraints, así que primero borramos explícitamente
+                c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (p_id,))
                 c.execute("""
-                    INSERT OR REPLACE INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
+                    INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     p_id, 'product', s_id, 
