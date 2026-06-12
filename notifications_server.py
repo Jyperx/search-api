@@ -70,12 +70,16 @@ def get_user_push_token(user_id):
         print(f"Error obteniendo token de {user_id}: {e}")
     return None
 
-def notify_active_drivers(title, body, data=None):
+def notify_active_drivers(title, body, data=None, exclude_user_id=None):
     """Envía push a todos los repartidores que estén online."""
     try:
         drivers = db.collection('users').where('isDriver', '==', True).where('isOnline', '==', True).stream()
         tokens = []
         for d in drivers:
+            # No enviar la notificación al mismo usuario que creó el pedido
+            if exclude_user_id and d.id == exclude_user_id:
+                continue
+                
             t = d.to_dict().get('expoPushToken')
             if t and t.startswith('ExponentPushToken'):
                 tokens.append(t)
@@ -118,7 +122,8 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                     notify_active_drivers(
                         "¡Nuevo Punto Favor!", 
                         "Alguien necesita un favor cerca. ¡Abre el radar!",
-                        {"orderId": doc_id, "role": "driver"}
+                        {"orderId": doc_id, "role": "driver"},
+                        data.get('userId')
                     )
                 else:
                     # Notificar al comercio
@@ -138,7 +143,8 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                 notify_active_drivers(
                     "¡Pedido Listo para Recoger!", 
                     f"Hay un pedido listo en {data.get('storeName', 'un comercio')}. ¡Abre el radar!",
-                    {"orderId": doc_id, "role": "driver"}
+                    {"orderId": doc_id, "role": "driver"},
+                    data.get('userId')
                 )
                 # Notificar al cliente que ya casi
                 user_id = data.get('userId')
