@@ -216,10 +216,24 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                     send_push_notification(token, "¡Nuevo Pedido!", "Tienes un nuevo pedido pendiente por revisar.", {"orderId": doc_id, "role": "commerce"})
 
             # 2. Comercio acepta (Preparando)
-            elif status == 'accepted_by_commerce':
+            elif status == 'preparing':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
-                send_push_notification(token, "Preparando tu pedido \U0001f373", "El comercio ha comenzado a preparar tu orden.", {"orderId": doc_id, "role": "client"})
+                payment_method = data.get('paymentMethod', 'cash')
+                if payment_method != 'cash':
+                    send_push_notification(token, "¡Pago Validado! ✅", "El comercio ha confirmado tu pago y está preparando tu orden.", {"orderId": doc_id, "role": "client"})
+                else:
+                    send_push_notification(token, "Preparando tu pedido 🍳", "El comercio ha comenzado a preparar tu orden.", {"orderId": doc_id, "role": "client"})
+
+            # 2.5 Cancelado / Rechazado
+            elif status == 'cancelled':
+                user_id = data.get('userId')
+                token = get_user_push_token(user_id)
+                cancel_reason = data.get('cancelReason')
+                if cancel_reason == 'pago_no_verificado':
+                    send_push_notification(token, "Pago no verificado ❌", "El comercio no pudo validar tu transferencia. Tu orden ha sido cancelada.", {"orderId": doc_id, "role": "client"})
+                else:
+                    send_push_notification(token, "Pedido Cancelado", "El comercio ha cancelado tu pedido.", {"orderId": doc_id, "role": "client"})
 
             # 3. Listo para recoger
             elif status == 'ready':
