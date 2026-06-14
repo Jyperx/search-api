@@ -52,11 +52,49 @@ def send_push_notification(expo_push_token, title, body, data=None):
                 'Accept-encoding': 'gzip, deflate',
                 'Content-Type': 'application/json',
             },
-            json=message
+            json=message,
+            timeout=5
         )
         print(f"Push enviado a {expo_push_token} (Role: {data.get('role') if data else 'N/A'}, Order: {data.get('orderId') if data else 'N/A'}): {response.status_code}")
     except Exception as e:
         print(f"Error enviando push: {e}")
+
+def send_push_notification_batch(tokens, title, body, data=None):
+    if not tokens:
+        return
+        
+    messages = []
+    for token in tokens:
+        if token and str(token).startswith("ExponentPushToken"):
+            messages.append({
+                "to": token,
+                "sound": "default",
+                "title": title,
+                "body": body,
+                "data": data or {}
+            })
+            
+    if not messages:
+        return
+        
+    # Expo soporta hasta 100 mensajes por request
+    chunk_size = 100
+    for i in range(0, len(messages), chunk_size):
+        chunk = messages[i:i + chunk_size]
+        try:
+            response = requests.post(
+                'https://exp.host/--/api/v2/push/send',
+                headers={
+                    'Accept': 'application/json',
+                    'Accept-encoding': 'gzip, deflate',
+                    'Content-Type': 'application/json',
+                },
+                json=chunk,
+                timeout=10
+            )
+            print(f"Push BATCH enviado a {len(chunk)} dispositivos: {response.status_code}")
+        except Exception as e:
+            print(f"Error enviando push BATCH: {e}")
 
 def get_user_push_token(user_id):
     if not user_id:
@@ -85,14 +123,13 @@ def notify_active_drivers(title, body, data=None, exclude_user_id=None):
             if t and t.startswith('ExponentPushToken'):
                 tokens.append(t)
         
-        # Expo permite enviar mensajes en lote (batch) pero para simplicidad iteramos
         # Eliminar tokens duplicados convirtiendo a set
         unique_tokens = list(set(tokens))
         
         print(f"Enviando push a {len(unique_tokens)} repartidores únicos...")
         
-        for token in unique_tokens:
-            send_push_notification(token, title, body, data)
+        # Enviar en lotes para máxima escalabilidad y evitar bloqueos (cooldowns/timeouts)
+        send_push_notification_batch(unique_tokens, title, body, data)
     except Exception as e:
         print(f"Error enviando push a repartidores: {e}")
 
@@ -140,15 +177,25 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                         store_token = get_user_push_token(store_id)
                         send_push_notification(store_token, "¡Pago Recibido! ✅", f"El cliente {data.get('userName', 'Cliente')} ha confirmado y pagado su reserva.", {"orderId": doc_id, "role": "commerce"})
                     elif status == 'cancelled':
+                        cancelled_by = data.get('cancelledBy', 'system')
+                        store_name = data.get('storeName', 'El comercio')
+                        user_name = data.get('userName', 'El cliente')
+                        
                         # Notificar al cliente
                         user_id = data.get('userId')
                         token = get_user_push_token(user_id)
-                        send_push_notification(token, "Reserva Cancelada ❌", "La reserva no pudo ser completada.", {"orderId": doc_id, "role": "client"})
+                        if cancelled_by == 'commerce':
+                            send_push_notification(token, "Reserva Cancelada", f"{store_name} no ha podido confirmar tu reserva.", {"orderId": doc_id, "role": "client"})
+                        else:
+                            send_push_notification(token, "Reserva Cancelada", "Has cancelado tu reserva exitosamente.", {"orderId": doc_id, "role": "client"})
                         
                         # Notificar al comercio
                         store_id = data.get('storeId')
                         store_token = get_user_push_token(store_id)
-                        send_push_notification(store_token, "Reserva Cancelada ❌", f"La reserva de {data.get('userName', 'Cliente')} ha sido cancelada.", {"orderId": doc_id, "role": "commerce"})
+                        if cancelled_by == 'client':
+                            send_push_notification(store_token, "Reserva Cancelada", f"El cliente {user_name} ha cancelado la reserva.", {"orderId": doc_id, "role": "commerce"})
+                        else:
+                            send_push_notification(store_token, "Reserva Cancelada", "Has cancelado/rechazado la reserva.", {"orderId": doc_id, "role": "commerce"})
                 continue # Evitar procesar el resto de la lógica de órdenes de comida
             
             # --- PEDIDOS DE COMIDA/FAVORES ---
