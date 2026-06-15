@@ -6,6 +6,7 @@ import threading
 from datetime import datetime, timezone
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 # Configuración Inicial
 SERVICE_ACCOUNT_FILE = 'serviceAccountKey.json'
@@ -110,7 +111,10 @@ def get_user_push_token(user_id):
 def notify_active_drivers(title, body, data=None, exclude_user_id=None):
     """Envía push a todos los repartidores que estén online."""
     try:
-        drivers = db.collection('users').where('isDriver', '==', True).where('isOnline', '==', True).stream()
+        drivers = db.collection('users') \
+            .where(filter=FieldFilter('isDriver', '==', True)) \
+            .where(filter=FieldFilter('isOnline', '==', True)) \
+            .stream()
         tokens = []
         for d in drivers:
             # No enviar la notificación al mismo usuario que creó el pedido
@@ -118,8 +122,13 @@ def notify_active_drivers(title, body, data=None, exclude_user_id=None):
             if exclude_user_id and d.id == exclude_user_id:
                 if os.getenv("ALLOW_SELF_ORDERS_DEV", "false").lower() != "true":
                     continue
+            
+            data_dict = d.to_dict()
+            # Si el repartidor ya está ocupado entregando algo (servicio, comida o favor), no lo molestamos
+            if data_dict.get('currentDeliveryId') or data_dict.get('hasActiveDelivery'):
+                continue
                 
-            t = d.to_dict().get('expoPushToken')
+            t = data_dict.get('expoPushToken')
             if t and t.startswith('ExponentPushToken'):
                 tokens.append(t)
         
@@ -223,7 +232,7 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                 if payment_method != 'cash':
                     send_push_notification(token, "¡Pago Validado! ✅", "El comercio ha confirmado tu pago y está preparando tu orden.", {"orderId": doc_id, "role": "client"})
                 else:
-                    send_push_notification(token, "Preparando tu pedido 🍳", "El comercio ha comenzado a preparar tu orden.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "Preparando tu pedido 📦", "El comercio ha comenzado a preparar tu orden.", {"orderId": doc_id, "role": "client"})
 
             # 2.5 Cancelado / Rechazado
             elif status == 'cancelled':
