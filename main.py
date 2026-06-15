@@ -470,17 +470,6 @@ def index_store(payload: StorePayload):
         conn.close()
     return {"status": "indexed", "id": payload.id}
 
-def start_firestore_listeners():
-    if not db:
-        print("Firebase no inicializado. No se iniciaron los listeners.")
-        return
-    print("Iniciando listener de notificaciones de Firebase...")
-    
-    # Iniciar solo el listener de notificaciones, NO los de productos ni comercios
-    import notifications_server
-    db.collection("orders").on_snapshot(notifications_server.on_order_snapshot)
-
 @app.on_event("startup")
 def startup_event():
-    listener_thread = threading.Thread(target=start_firestore_listeners, daemon=True)
-    listener_thread.start()
+    print("Search backend is ready. Push notifications listener has been removed to avoid duplicates.")
