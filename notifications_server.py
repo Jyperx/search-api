@@ -3,7 +3,7 @@ import time
 import json
 import requests
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import firebase_admin
 from firebase_admin import credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -33,8 +33,37 @@ db = firestore.client()
 # Tiempo de inicio para ignorar eventos pasados
 start_time = time.time()
 processed_events = {}
+user_status_cache = {}
 
-def send_push_notification(expo_push_token, title, body, data=None):
+def send_app_notification(user_id, title, body, data=None):
+    if not user_id: return
+    try:
+        expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+        doc_id = None
+        if data and data.get('orderId'):
+            doc_id = f"order_{data.get('orderId')}"
+            
+        doc_ref = db.collection('users').document(user_id).collection('notifications')
+        if doc_id:
+            doc_ref = doc_ref.document(doc_id)
+        else:
+            doc_ref = doc_ref.document()
+            
+        doc_ref.set({
+            'title': title,
+            'body': body,
+            'data': data or {},
+            'isRead': False,
+            'createdAt': firestore.SERVER_TIMESTAMP,
+            'expiresAt': expires_at
+        }, merge=True)
+    except Exception as e:
+        print(f"Error guardando notificacion en DB: {e}")
+
+def send_push_notification(expo_push_token, title, body, data=None, user_id=None):
+    if user_id:
+        send_app_notification(user_id, title, body, data)
+        
     if not expo_push_token or not str(expo_push_token).startswith("ExponentPushToken"):
         return
 
@@ -127,6 +156,9 @@ def notify_active_drivers(title, body, data=None, exclude_user_id=None):
             # Si el repartidor ya está ocupado entregando algo (servicio, comida o favor), no lo molestamos
             if data_dict.get('currentDeliveryId') or data_dict.get('hasActiveDelivery'):
                 continue
+            
+            # Guardar en Firestore para que la vea en su app
+            send_app_notification(d.id, title, body, data)
                 
             t = data_dict.get('expoPushToken')
             if t and t.startswith('ExponentPushToken'):
@@ -174,17 +206,17 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                     if status == 'approved_awaiting_payment':
                         user_id = data.get('userId')
                         token = get_user_push_token(user_id)
-                        send_push_notification(token, "¡Reserva Aprobada! 💳", "Tu reserva ha sido aprobada. Procede con el pago para confirmarla.", {"orderId": doc_id, "role": "client"})
+                        send_push_notification(token, "¡Reserva Aprobada! 💳", "Tu reserva ha sido aprobada. Procede con el pago para confirmarla.", {"orderId": doc_id, "role": "client"}, user_id)
                     elif status == 'confirmed':
                         # Notificar al cliente
                         user_id = data.get('userId')
                         token = get_user_push_token(user_id)
-                        send_push_notification(token, "¡Reserva Confirmada! ✅", "Tu reserva está asegurada. ¡Te esperamos!", {"orderId": doc_id, "role": "client"})
-                        
-                        # Notificar al comercio
+                        send_push_notification(token, "Pedido Asignado", "¡Un repartidor ha aceptado tu pedido y va en camino al comercio!", {"orderId": doc_id, "role": "client"}, user_id)
+                        # Notificar al comercio que un repartidor va en camino
                         store_id = data.get('storeId')
                         store_token = get_user_push_token(store_id)
-                        send_push_notification(store_token, "¡Pago Recibido! ✅", f"El cliente {data.get('userName', 'Cliente')} ha confirmado y pagado su reserva.", {"orderId": doc_id, "role": "commerce"})
+                        driver_name = data.get('driverName', 'Tu repartidor')
+                        send_push_notification(store_token, "Repartidor Asignado", f"El repartidor {driver_name} va en camino a recoger el pedido.", {"orderId": doc_id, "role": "commerce"}, store_id)
                     elif status == 'cancelled':
                         cancelled_by = data.get('cancelledBy', 'system')
                         store_name = data.get('storeName', 'El comercio')
@@ -194,17 +226,17 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                         user_id = data.get('userId')
                         token = get_user_push_token(user_id)
                         if cancelled_by == 'commerce':
-                            send_push_notification(token, "Reserva Cancelada", f"{store_name} no ha podido confirmar tu reserva.", {"orderId": doc_id, "role": "client"})
+                            send_push_notification(token, "Reserva Cancelada", f"{store_name} no ha podido confirmar tu reserva.", {"orderId": doc_id, "role": "client"}, user_id)
                         else:
-                            send_push_notification(token, "Reserva Cancelada", "Has cancelado tu reserva exitosamente.", {"orderId": doc_id, "role": "client"})
+                            send_push_notification(token, "Reserva Cancelada", "Has cancelado tu reserva exitosamente.", {"orderId": doc_id, "role": "client"}, user_id)
                         
                         # Notificar al comercio
                         store_id = data.get('storeId')
                         store_token = get_user_push_token(store_id)
                         if cancelled_by == 'client':
-                            send_push_notification(store_token, "Reserva Cancelada", f"El cliente {user_name} ha cancelado la reserva.", {"orderId": doc_id, "role": "commerce"})
+                            send_push_notification(store_token, "Reserva Cancelada", f"El cliente {user_name} ha cancelado la reserva.", {"orderId": doc_id, "role": "commerce"}, store_id)
                         else:
-                            send_push_notification(store_token, "Reserva Cancelada", "Has cancelado/rechazado la reserva.", {"orderId": doc_id, "role": "commerce"})
+                            send_push_notification(store_token, "Reserva Cancelada", "Has cancelado/rechazado la reserva.", {"orderId": doc_id, "role": "commerce"}, store_id)
                 continue # Evitar procesar el resto de la lógica de órdenes de comida
             
             # --- PEDIDOS DE COMIDA/FAVORES ---
@@ -222,7 +254,7 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                     # Notificar al comercio
                     store_id = data.get('storeId')
                     token = get_user_push_token(store_id)
-                    send_push_notification(token, "¡Nuevo Pedido!", "Tienes un nuevo pedido pendiente por revisar.", {"orderId": doc_id, "role": "commerce"})
+                    send_push_notification(token, "¡Nuevo Pedido!", "Tienes un nuevo pedido pendiente por revisar.", {"orderId": doc_id, "role": "commerce"}, store_id)
 
             # 2. Comercio acepta (Preparando)
             elif status == 'preparing':
@@ -230,9 +262,9 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                 token = get_user_push_token(user_id)
                 payment_method = data.get('paymentMethod', 'cash')
                 if payment_method != 'cash':
-                    send_push_notification(token, "¡Pago Validado! ✅", "El comercio ha confirmado tu pago y está preparando tu orden.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "¡Pago Validado! ✅", "El comercio ha confirmado tu pago y está preparando tu orden.", {"orderId": doc_id, "role": "client"}, user_id)
                 else:
-                    send_push_notification(token, "Preparando tu pedido 📦", "El comercio ha comenzado a preparar tu orden.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "Preparando tu pedido 📦", "El comercio ha comenzado a preparar tu orden.", {"orderId": doc_id, "role": "client"}, user_id)
 
             # 2.5 Cancelado / Rechazado
             elif status == 'cancelled':
@@ -240,9 +272,9 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                 token = get_user_push_token(user_id)
                 cancel_reason = data.get('cancelReason')
                 if cancel_reason == 'pago_no_verificado':
-                    send_push_notification(token, "Pago no verificado ❌", "El comercio no pudo validar tu transferencia. Tu orden ha sido cancelada.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "Pago no verificado ❌", "El comercio no pudo validar tu transferencia. Tu orden ha sido cancelada.", {"orderId": doc_id, "role": "client"}, user_id)
                 else:
-                    send_push_notification(token, "Pedido Cancelado", "El comercio ha cancelado tu pedido.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "Pedido Cancelado", "El comercio ha cancelado tu pedido.", {"orderId": doc_id, "role": "client"}, user_id)
 
             # 3. Listo para recoger
             elif status == 'ready':
@@ -256,47 +288,91 @@ def on_order_snapshot(col_snapshot, changes, read_time):
                 # Notificar al cliente que ya casi
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
-                send_push_notification(token, "¡Tu pedido está listo!", "Estamos buscando un repartidor para llevártelo.", {"orderId": doc_id, "role": "client"})
+                send_push_notification(token, "¡Tu pedido está listo!", "Estamos buscando un repartidor para llevártelo.", {"orderId": doc_id, "role": "client"}, user_id)
 
             # 4. Repartidor asignado
             elif status == 'accepted_by_driver':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
                 if is_favor:
-                    send_push_notification(token, "¡Repartidor asignado! \U0001f3c3", "Un repartidor se dirige a realizar tus compras.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "¡Repartidor asignado! \U0001f3c3", "Un repartidor se dirige a realizar tus compras.", {"orderId": doc_id, "role": "client"}, user_id)
                 else:
-                    send_push_notification(token, "¡Repartidor asignado!", "Un repartidor va en camino a recoger tu pedido.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "¡Repartidor asignado!", "Un repartidor va en camino a recoger tu pedido.", {"orderId": doc_id, "role": "client"}, user_id)
 
             # 5. Pedido recogido (en camino al cliente)
             elif status == 'picked_up':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
                 if is_favor:
-                    send_push_notification(token, "¡Comprando! \U0001f6d2", "El repartidor está en el establecimiento comprando lo que pediste.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "¡Comprando! \U0001f6d2", "El repartidor está en el establecimiento comprando lo que pediste.", {"orderId": doc_id, "role": "client"}, user_id)
                 else:
-                    send_push_notification(token, "¡Tu pedido va en camino! \U0001f6f5", "El repartidor ha recogido tu pedido y se dirige hacia ti.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "¡Tu pedido va en camino! \U0001f6f5", "El repartidor ha recogido tu pedido y se dirige hacia ti.", {"orderId": doc_id, "role": "client"}, user_id)
 
             # 5.5 Favor en camino (después de comprar)
             elif status == 'on_the_way':
                 if is_favor:
                     user_id = data.get('userId')
                     token = get_user_push_token(user_id)
-                    send_push_notification(token, "¡Compras terminadas! \U0001f6f5", "El repartidor ya tiene tus cosas y va en camino hacia ti.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "¡Compras terminadas! \U0001f6f5", "El repartidor ya tiene tus cosas y va en camino hacia ti.", {"orderId": doc_id, "role": "client"}, user_id)
 
             # 6. Entregado
             elif status == 'delivered':
                 user_id = data.get('userId')
                 token = get_user_push_token(user_id)
                 if is_favor:
-                    send_push_notification(token, "¡Favor Completado! \U0001f389", "Tu encargo ha sido entregado exitosamente.", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "¡Favor Completado! 🎉", "El repartidor ha completado tu Punto Favor. ¡Gracias por usar la app!", {"orderId": doc_id, "role": "client"}, user_id)
                 else:
-                    send_push_notification(token, "¡Pedido Entregado! \U0001f389", "Gracias por usar Punto. ¡Disfruta!", {"orderId": doc_id, "role": "client"})
+                    send_push_notification(token, "¡Pedido Entregado! 🎉", "Tu pedido ha sido entregado con éxito. ¡Que lo disfrutes!", {"orderId": doc_id, "role": "client"}, user_id)
+
+def on_user_snapshot(col_snapshot, changes, read_time):
+    for change in changes:
+        doc_id = change.document.id
+        data = change.document.to_dict() or {}
+        
+        current_store_status = data.get('storeStatus')
+        current_driver_status = data.get('driverStatus')
+        
+        if change.type.name == 'ADDED':
+            # Solo poblamos el caché inicial
+            user_status_cache[doc_id] = {
+                'storeStatus': current_store_status,
+                'driverStatus': current_driver_status
+            }
+        elif change.type.name == 'MODIFIED':
+            old_state = user_status_cache.get(doc_id, {})
+            old_store_status = old_state.get('storeStatus')
+            old_driver_status = old_state.get('driverStatus')
+            
+            token = data.get('expoPushToken')
+            
+            # --- COMERCIO ---
+            if current_store_status != old_store_status:
+                if current_store_status == 'approved' and old_store_status == 'pending_verification':
+                    send_push_notification(token, "¡Comercio Aprobado! 🎉", "Tu solicitud ha sido aprobada. Ya puedes empezar a recibir pedidos.", {"role": "commerce"}, doc_id)
+                elif current_store_status == 'rejected' and old_store_status == 'pending_verification':
+                    send_push_notification(token, "Solicitud de Comercio Rechazada", "Lamentamos informarte que tu solicitud para abrir un comercio no fue aprobada.", {"role": "client"}, doc_id)
+            
+            # --- REPARTIDOR ---
+            if current_driver_status != old_driver_status:
+                if current_driver_status == 'approved' and old_driver_status == 'pending_verification':
+                    send_push_notification(token, "¡Repartidor Aprobado! 🛵", "Tu perfil ha sido verificado. ¡Prepárate para empezar a repartir y ganar dinero!", {"role": "driver"}, doc_id)
+                elif current_driver_status == 'rejected' and old_driver_status == 'pending_verification':
+                    send_push_notification(token, "Solicitud de Repartidor Rechazada", "Lamentamos informarte que tu solicitud para ser repartidor no fue aprobada.", {"role": "client"}, doc_id)
+            
+            # Actualizamos el caché
+            user_status_cache[doc_id] = {
+                'storeStatus': current_store_status,
+                'driverStatus': current_driver_status
+            }
 
 def start_listener():
-    print("Iniciando Listener de Notificaciones (orders)...")
-    col_query = db.collection('orders')
-    # Watch the collection query
-    query_watch = col_query.on_snapshot(on_order_snapshot)
+    print("Iniciando Listener de Notificaciones (orders y users)...")
+    
+    col_query_orders = db.collection('orders')
+    query_watch_orders = col_query_orders.on_snapshot(on_order_snapshot)
+    
+    col_query_users = db.collection('users')
+    query_watch_users = col_query_users.on_snapshot(on_user_snapshot)
     
     # Mantener el script vivo
     while True:
