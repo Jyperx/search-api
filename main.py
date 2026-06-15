@@ -43,7 +43,12 @@ else:
     print(f"ADVERTENCIA: No se encontró '{SERVICE_ACCOUNT_FILE}' ni la variable FIREBASE_SERVICE_ACCOUNT. El endpoint /api/sync fallará.")
 
 # Configurar SQLite con FTS5 (Full-Text Search 5)
-SQLITE_DB = 'search_index.db'
+# Soportar Persistent Volume en Railway
+VOLUME_PATH = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '')
+if VOLUME_PATH:
+    SQLITE_DB = os.path.join(VOLUME_PATH, 'search_index.db')
+else:
+    SQLITE_DB = 'search_index.db'
 
 def init_db():
     conn = sqlite3.connect(SQLITE_DB)
@@ -389,78 +394,84 @@ def get_promotions():
     return {"results": [dict(row) for row in rows]}
 
 # ==========================================
-# FIREBASE REAL-TIME LISTENERS
+# ==========================================
+# WEBHOOKS PUSH PARA ACTUALIZAR ÍNDICE (MINI-ALGOLIA)
 # ==========================================
 import threading
 
 sqlite_lock = threading.Lock()
 
-def on_snapshot_stores(col_snapshot, changes, read_time):
-    with sqlite_lock:
-        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
-        c = conn.cursor()
-        for change in changes:
-            doc = change.document
-            s_id = doc.id
-            s_data = doc.to_dict()
-            if change.type.name in ['ADDED', 'MODIFIED']:
-                # FTS5 no soporta UNIQUE constraints, así que primero borramos explícitamente
-                c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
-                c.execute("""
-                    INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
-                """, (
-                    s_id, 'store', s_id, 
-                    s_data.get('name', ''), 
-                    s_data.get('category', ''), 
-                    '', '', '', s_data.get('imageUrl', '')
-                )) 
-            elif change.type.name == 'REMOVED':
-                c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
-        conn.commit()
-        conn.close()
+class ProductPayload(BaseModel):
+    id: str
+    storeId: str
+    name: str
+    category: Optional[str] = ""
+    description: Optional[str] = ""
+    price: Optional[float] = 0
+    icon: Optional[str] = ""
+    imageUrl: Optional[str] = ""
+    onSale: Optional[bool] = False
+    salePrice: Optional[float] = None
 
-def on_snapshot_products(col_snapshot, changes, read_time):
+class StorePayload(BaseModel):
+    id: str
+    name: str
+    category: Optional[str] = ""
+    imageUrl: Optional[str] = ""
+
+@app.post("/api/index/product")
+def index_product(payload: ProductPayload):
     with sqlite_lock:
         conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
         c = conn.cursor()
-        for change in changes:
-            doc = change.document
-            p_id = doc.id
-            p_data = doc.to_dict()
-            s_id = doc.reference.parent.parent.id
-            
-            if change.type.name in ['ADDED', 'MODIFIED']:
-                # FTS5 no soporta UNIQUE constraints, así que primero borramos explícitamente
-                c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (p_id,))
-                c.execute("""
-                    INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    p_id, 'product', s_id, 
-                    p_data.get('name', ''), 
-                    p_data.get('category', ''), 
-                    p_data.get('description', ''), 
-                    str(p_data.get('price', '')),
-                    p_data.get('icon', ''),
-                    p_data.get('imageUrl', ''),
-                    1 if p_data.get('onSale') else 0,
-                    p_data.get('salePrice', None)
-                ))
-            elif change.type.name == 'REMOVED':
-                c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (p_id,))
+        c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (payload.id,))
+        c.execute("""
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            payload.id, 'product', payload.storeId, 
+            payload.name, payload.category, payload.description, 
+            str(payload.price), payload.icon, payload.imageUrl,
+            1 if payload.onSale else 0, payload.salePrice
+        ))
         conn.commit()
         conn.close()
+    return {"status": "indexed", "id": payload.id}
+
+@app.delete("/api/index/product/{product_id}")
+def delete_product_index(product_id: str):
+    with sqlite_lock:
+        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+        c = conn.cursor()
+        c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (product_id,))
+        conn.commit()
+        conn.close()
+    return {"status": "deleted", "id": product_id}
+
+@app.post("/api/index/store")
+def index_store(payload: StorePayload):
+    with sqlite_lock:
+        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+        c = conn.cursor()
+        c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (payload.id,))
+        c.execute("""
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+        """, (
+            payload.id, 'store', payload.id, 
+            payload.name, payload.category, '', '', '', payload.imageUrl
+        )) 
+        conn.commit()
+        conn.close()
+    return {"status": "indexed", "id": payload.id}
 
 def start_firestore_listeners():
     if not db:
         print("Firebase no inicializado. No se iniciaron los listeners.")
         return
-    print("Iniciando listeners de Firestore en segundo plano...")
-    db.collection("stores").on_snapshot(on_snapshot_stores)
-    db.collection_group("products").on_snapshot(on_snapshot_products)
+    print("Iniciando listener de notificaciones de Firebase...")
     
-    # Iniciar listener de notificaciones
+    # Iniciar solo el listener de notificaciones, NO los de productos ni comercios
     import notifications_server
     db.collection("orders").on_snapshot(notifications_server.on_order_snapshot)
 
