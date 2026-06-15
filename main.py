@@ -52,6 +52,11 @@ else:
 
 def init_db():
     conn = sqlite3.connect(SQLITE_DB)
+    # Habilitar modo WAL (Write-Ahead Logging) para alta concurrencia
+    conn.execute('PRAGMA journal_mode=WAL;')
+    # Optimizar el rendimiento de escritura
+    conn.execute('PRAGMA synchronous=NORMAL;')
+    
     c = conn.cursor()
     # FTS5 crea una tabla virtual súper rápida para texto
     # type: 'store' o 'product'
