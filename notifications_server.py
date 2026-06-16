@@ -185,12 +185,12 @@ def on_order_snapshot(col_snapshot, changes, read_time):
         status = data.get('status')
         is_favor = data.get('isFavor', False)
         
-        # Evitar procesar el mismo cambio duplicado
-        event_hash = f"{doc_id}_{status}"
-        if processed_events.get(event_hash):
+        # Evitar procesar si el estado no ha cambiado
+        last_status = processed_events.get(doc_id)
+        if last_status == status:
             continue
         
-        processed_events[event_hash] = True
+        processed_events[doc_id] = status
 
         # === Lógica de Notificaciones ===
         
