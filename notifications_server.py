@@ -365,6 +365,50 @@ def on_user_snapshot(col_snapshot, changes, read_time):
                 'driverStatus': current_driver_status
             }
 
+def on_campaign_snapshot(col_snapshot, changes, read_time):
+    if time.time() - start_time < 5:
+        return
+
+    for change in changes:
+        doc_id = change.document.id
+        data = change.document.to_dict()
+        status = data.get('status')
+        
+        last_status = processed_events.get(f"camp_{doc_id}")
+        if last_status == status:
+            continue
+        
+        processed_events[f"camp_{doc_id}"] = status
+
+        if change.type.name in ['ADDED', 'MODIFIED'] and status == 'sending':
+            title = data.get('title', 'Notificación de Punto')
+            body = data.get('body', '')
+            action_url = data.get('targetUrl', 'store')
+            commerce_id = data.get('commerceId')
+            
+            print(f"Preparando campaña masiva: {title}")
+            try:
+                # Fetch all user tokens
+                users_ref = db.collection('users').stream()
+                tokens = []
+                for u in users_ref:
+                    u_data = u.to_dict()
+                    t = u_data.get('expoPushToken')
+                    if t and t.startswith('ExponentPushToken'):
+                        tokens.append(t)
+                
+                unique_tokens = list(set(tokens))
+                print(f"Enviando campaña masiva '{title}' a {len(unique_tokens)} usuarios...")
+                
+                payload = {'actionUrl': action_url, 'commerceId': commerce_id, 'type': 'marketing_push'}
+                send_push_notification_batch(unique_tokens, title, body, payload)
+                
+                # Update campaign to 'sent'
+                db.collection('marketing_campaigns').document(doc_id).update({'status': 'sent'})
+                print(f"Campaña {doc_id} marcada como enviada.")
+            except Exception as e:
+                print(f"Error procesando campaña masiva: {e}")
+
 def start_listener():
     print("Iniciando Listener de Notificaciones (orders y users)...")
     
@@ -373,6 +417,9 @@ def start_listener():
     
     col_query_users = db.collection('users')
     query_watch_users = col_query_users.on_snapshot(on_user_snapshot)
+
+    col_query_campaigns = db.collection('marketing_campaigns')
+    query_watch_campaigns = col_query_campaigns.on_snapshot(on_campaign_snapshot)
     
     # Mantener el script vivo
     while True:
