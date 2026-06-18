@@ -71,6 +71,7 @@ def init_db():
         )
     ''')
     
+    c.execute("DROP TABLE IF EXISTS promotions")
     c.execute('''
         CREATE TABLE IF NOT EXISTS promotions (
             id TEXT PRIMARY KEY,
