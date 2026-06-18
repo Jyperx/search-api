@@ -71,10 +71,13 @@ def init_db():
         )
     ''')
     
-    # Tabla normal para las promociones (no necesitamos fts5 para esto)
     c.execute('''
         CREATE TABLE IF NOT EXISTS promotions (
             id TEXT PRIMARY KEY,
+            type TEXT,
+            targetUrl TEXT,
+            imageUrl TEXT,
+            storeId TEXT,
             emoji TEXT,
             title TEXT,
             subtitle TEXT,
@@ -158,34 +161,48 @@ def sync_database():
     c.execute("DELETE FROM search_index")
     c.execute("DELETE FROM promotions")
     
-    # 1. Leer Promociones
-    promos_ref = db.collection("promotions")
-    promos = list(promos_ref.stream())
+    # 1. Leer Promociones desde marketing_campaigns
+    import time
+    now_ms = int(time.time() * 1000)
     
-    if len(promos) == 0:
-        # Insertar datos por defecto si no hay en firebase
+    camps_ref = db.collection("marketing_campaigns")
+    # Filtramos solo activas y tipo banner, o filtramos localmente para simplificar
+    camps = list(camps_ref.stream())
+    
+    count_banners = 0
+    if len(camps) > 0:
+        for promo in camps:
+            p_data = promo.to_dict()
+            if p_data.get('type') in ['simple', 'premium_product', 'premium_store']:
+                # Validar estado y expiración
+                if p_data.get('status') == 'active':
+                    expires_at = p_data.get('expiresAt', 0)
+                    if expires_at > now_ms:
+                        c.execute("""
+                            INSERT INTO promotions (id, type, targetUrl, imageUrl, storeId, emoji, title, subtitle, bg, titleColor, subtitleColor)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            promo.id,
+                            p_data.get('type', 'simple'),
+                            p_data.get('targetUrl', ''),
+                            p_data.get('imageUrl', ''),
+                            p_data.get('commerceId', ''),
+                            p_data.get('emoji', ''),
+                            p_data.get('title', ''),
+                            p_data.get('subtitle', ''),
+                            p_data.get('bg', '#000'),
+                            p_data.get('titleColor', '#FFF'),
+                            p_data.get('subtitleColor', '#FFF')
+                        ))
+                        count_banners += 1
+
+    if count_banners == 0:
+        # Fallback si no hay banners
         default_ads = [
-            ("1", "local-offer", "50% OFF en Tacos", "Tacos El Rey", "#FFE4E1", "#DC143C", "#CD5C5C"),
-            ("2", "local-pizza", "2x1 en Pizzas", "Pizza Nostra", "#E6E6FA", "#4B0082", "#6A5ACD"),
-            ("3", "bakery-dining", "Envío Gratis", "Pan Artesano", "#FFFACD", "#B8860B", "#DAA520")
+            ("1", "simple", "store", "", "", "local-offer", "Descubre Ofertas", "En los mejores comercios", "#FFE4E1", "#DC143C", "#CD5C5C")
         ]
         for ad in default_ads:
-            c.execute("INSERT INTO promotions VALUES (?, ?, ?, ?, ?, ?, ?)", ad)
-    else:
-        for promo in promos:
-            p_data = promo.to_dict()
-            c.execute("""
-                INSERT INTO promotions (id, emoji, title, subtitle, bg, titleColor, subtitleColor)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                promo.id,
-                p_data.get('emoji', 'star'),
-                p_data.get('title', ''),
-                p_data.get('subtitle', ''),
-                p_data.get('bg', '#000'),
-                p_data.get('titleColor', '#FFF'),
-                p_data.get('subtitleColor', '#FFF')
-            ))
+            c.execute("INSERT INTO promotions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ad)
 
     # 2. Leer Comercios
     stores_ref = db.collection("stores")

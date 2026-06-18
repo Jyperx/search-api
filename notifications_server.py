@@ -96,13 +96,16 @@ def send_push_notification_batch(tokens, title, body, data=None):
     messages = []
     for token in tokens:
         if token and str(token).startswith("ExponentPushToken"):
-            messages.append({
+            msg = {
                 "to": token,
                 "sound": "default",
                 "title": title,
                 "body": body,
                 "data": data or {}
-            })
+            }
+            if data and data.get('imageUrl'):
+                msg["categoryId"] = "image" # Para iOS
+            messages.append(msg)
             
     if not messages:
         return
@@ -385,6 +388,7 @@ def on_campaign_snapshot(col_snapshot, changes, read_time):
             body = data.get('body', '')
             action_url = data.get('targetUrl', 'store')
             commerce_id = data.get('commerceId')
+            image_url = data.get('imageUrl')
             
             print(f"Preparando campaña masiva: {title}")
             try:
@@ -401,6 +405,9 @@ def on_campaign_snapshot(col_snapshot, changes, read_time):
                 print(f"Enviando campaña masiva '{title}' a {len(unique_tokens)} usuarios...")
                 
                 payload = {'actionUrl': action_url, 'commerceId': commerce_id, 'type': 'marketing_push'}
+                if image_url:
+                    payload['imageUrl'] = image_url
+                    
                 send_push_notification_batch(unique_tokens, title, body, payload)
                 
                 # Update campaign to 'sent'
