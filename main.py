@@ -416,6 +416,60 @@ def get_promotions():
     conn.close()
     return {"results": [dict(row) for row in rows]}
 
+@app.get("/api/recommendations/{uid}")
+def get_user_recommendations(uid: str):
+    """Obtiene recomendaciones on-demand calculadas en base a la actividad del usuario."""
+    if not db:
+        return get_popular_products()
+        
+    try:
+        # 1. Analizar actividad reciente del usuario en Firestore (clics, busquedas, vistas)
+        activities = db.collection('users').document(uid).collection('activity').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(50).stream()
+        
+        category_scores = {}
+        for act in activities:
+            data = act.to_dict()
+            cat = data.get('category')
+            if cat and cat != 'General':
+                score = 2 if data.get('type') == 'search' else 1
+                category_scores[cat] = category_scores.get(cat, 0) + score
+                
+        if not category_scores:
+            return get_popular_products() # Fallback si es un usuario nuevo sin clics
+            
+        top_categories = sorted(category_scores.keys(), key=lambda k: category_scores[k], reverse=True)[:2]
+        
+        # 2. Consultar nuestra base local ultrarrápida (SQLite) para buscar productos de esas categorías
+        conn = sqlite3.connect(SQLITE_DB)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        placeholders = ', '.join('?' for _ in top_categories)
+        query_sql = f"""
+            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice,
+                   s.name as storeName
+            FROM search_index p
+            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+            WHERE p.type = 'product' AND p.category IN ({placeholders})
+            ORDER BY RANDOM()
+            LIMIT 6
+        """
+        c.execute(query_sql, top_categories)
+        rows = c.fetchall()
+        conn.close()
+        
+        results = [dict(row) for row in rows]
+        
+        if len(results) < 3:
+            # Si no hay suficientes productos, completamos con los más populares
+            return get_popular_products()
+            
+        return {"results": results}
+    except Exception as e:
+        print(f"Error generando recomendaciones para {uid}:", e)
+        return get_popular_products()
+
 # ==========================================
 # ==========================================
 # WEBHOOKS PUSH PARA ACTUALIZAR ÍNDICE (MINI-ALGOLIA)
