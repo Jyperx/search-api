@@ -61,13 +61,13 @@ def init_db():
     # FTS5 crea una tabla virtual súper rápida para texto
     # type: 'store' o 'product'
     try:
-        c.execute("SELECT salePrice FROM search_index LIMIT 1")
+        c.execute("SELECT likes FROM search_index LIMIT 1")
     except sqlite3.OperationalError:
         c.execute("DROP TABLE IF EXISTS search_index")
         
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-            id, type, storeId, name, category, description, price, icon, imageUrl UNINDEXED, onSale UNINDEXED, salePrice UNINDEXED
+            id, type, storeId, name, category, description, price, icon, imageUrl UNINDEXED, onSale UNINDEXED, salePrice UNINDEXED, likes UNINDEXED, views UNINDEXED, purchases UNINDEXED
         )
     ''')
     
@@ -216,8 +216,8 @@ def sync_database():
         
         # Insertar el comercio en el índice
         c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0)
         """, (
             s_id, 'store', s_id, 
             s_data.get('name', ''), 
@@ -231,8 +231,8 @@ def sync_database():
         for product in products_ref.stream():
             p_data = product.to_dict()
             c.execute("""
-                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 product.id, 'product', s_id, 
                 p_data.get('name', ''), 
@@ -242,7 +242,10 @@ def sync_database():
                 p_data.get('icon', ''),
                 p_data.get('imageUrl', ''),
                 1 if p_data.get('onSale') else 0,
-                p_data.get('salePrice', None)
+                p_data.get('salePrice', None),
+                p_data.get('likes', 0),
+                p_data.get('views', 0),
+                p_data.get('purchases', 0)
             ))
             count += 1
 
@@ -271,8 +274,8 @@ def sync_store(store_id: str):
     if store_doc.exists:
         s_data = store_doc.to_dict()
         c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0)
         """, (
             store_id, 'store', store_id, 
             s_data.get('name', ''), 
@@ -286,8 +289,8 @@ def sync_store(store_id: str):
         for product in products_ref.stream():
             p_data = product.to_dict()
             c.execute("""
-                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 product.id, 'product', store_id, 
                 p_data.get('name', ''), 
@@ -297,7 +300,10 @@ def sync_store(store_id: str):
                 p_data.get('icon', ''),
                 p_data.get('imageUrl', ''),
                 1 if p_data.get('onSale') else 0,
-                p_data.get('salePrice', None)
+                p_data.get('salePrice', None),
+                p_data.get('likes', 0),
+                p_data.get('views', 0),
+                p_data.get('purchases', 0)
             ))
             count += 1
 
@@ -337,7 +343,7 @@ def search(q: str = ""):
         # Buscamos en todas las columnas y ordenamos por "rank" (relevancia automática de SQLite FTS5)
         c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
                    s.name as storeName
             FROM search_index p
             LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
@@ -353,7 +359,7 @@ def search(q: str = ""):
         if len(results) == 0 and len(safe_q) >= 3:
             c.execute("""
                 SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice,
+                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
                        s.name as storeName
                 FROM search_index p
                 LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
@@ -393,12 +399,12 @@ def get_popular_products():
     # Hacemos JOIN con el registro de la tienda para obtener su nombre
     c.execute("""
         SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-               p.price, p.icon, p.imageUrl, p.onSale, p.salePrice,
+               p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
                s.name as storeName
         FROM search_index p
         LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
         WHERE p.type = 'product'
-        ORDER BY RANDOM()
+        ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
         LIMIT 6
     """)
     rows = c.fetchall()
@@ -447,12 +453,12 @@ def get_user_recommendations(uid: str):
         placeholders = ', '.join('?' for _ in top_categories)
         query_sql = f"""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
                    s.name as storeName
             FROM search_index p
             LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
             WHERE p.type = 'product' AND p.category IN ({placeholders})
-            ORDER BY RANDOM()
+            ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
             LIMIT 6
         """
         c.execute(query_sql, top_categories)
@@ -489,6 +495,9 @@ class ProductPayload(BaseModel):
     imageUrl: Optional[str] = ""
     onSale: Optional[bool] = False
     salePrice: Optional[float] = None
+    likes: Optional[int] = 0
+    views: Optional[int] = 0
+    purchases: Optional[int] = 0
 
 class StorePayload(BaseModel):
     id: str
@@ -503,13 +512,14 @@ def index_product(payload: ProductPayload):
         c = conn.cursor()
         c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (payload.id,))
         c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             payload.id, 'product', payload.storeId, 
             payload.name, payload.category, payload.description, 
             str(payload.price), payload.icon, payload.imageUrl,
-            1 if payload.onSale else 0, payload.salePrice
+            1 if payload.onSale else 0, payload.salePrice,
+            payload.likes, payload.views, payload.purchases
         ))
         conn.commit()
         conn.close()
@@ -532,8 +542,8 @@ def index_store(payload: StorePayload):
         c = conn.cursor()
         c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (payload.id,))
         c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL)
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0)
         """, (
             payload.id, 'store', payload.id, 
             payload.name, payload.category, '', '', '', payload.imageUrl
