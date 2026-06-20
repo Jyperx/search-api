@@ -435,7 +435,12 @@ def search(q: str = ""):
             FROM search_index p
             LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
             WHERE search_index MATCH ?
-            ORDER BY rank
+            ORDER BY 
+                rank - (
+                    (COALESCE(CAST(p.likes AS REAL), 0) * 0.1) + 
+                    (COALESCE(CAST(p.purchases AS REAL), 0) * 0.2) + 
+                    (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 10) / 10.0 ELSE 0 END)
+                )
             LIMIT 50
         """, (fts_query,))
         
@@ -452,6 +457,12 @@ def search(q: str = ""):
                 FROM search_index p
                 LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
                 WHERE p.name LIKE ? OR p.category LIKE ? OR p.description LIKE ?
+                ORDER BY 
+                    (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
+                    (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
+                    (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
+                    (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
+                    ABS(RANDOM() % 20) DESC
                 LIMIT 50
             """, (like_q, like_q, like_q))
             
@@ -603,7 +614,12 @@ def simulate_home_feed(req: SimulateRequest):
             FROM search_index p
             LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
             WHERE p.type = 'product' AND search_index MATCH ?
-            ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
+            ORDER BY 
+                (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
+                (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
+                (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
+                (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
+                ABS(RANDOM() % 20) DESC
             LIMIT 5
         """, (keywords,))
         items = c.fetchall()
@@ -706,7 +722,12 @@ def get_dynamic_home_feed(uid: str):
             FROM search_index p
             LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
             WHERE p.type = 'product' AND search_index MATCH ?
-            ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
+            ORDER BY 
+                (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
+                (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
+                (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
+                (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
+                ABS(RANDOM() % 20) DESC
             LIMIT 5
         """, (keywords,))
         items = c.fetchall()
@@ -745,6 +766,10 @@ def get_dynamic_home_feed(uid: str):
         SELECT id, type, storeId, name, category, description, price, icon, imageUrl as logoUrl
         FROM search_index
         WHERE type = 'store'
+        ORDER BY 
+            (COALESCE(CAST(likes AS REAL), 0) * 10.0) +
+            (CASE WHEN COALESCE(CAST(views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
+            ABS(RANDOM() % 20) DESC
         LIMIT 15
     """)
     stores = c.fetchall()
