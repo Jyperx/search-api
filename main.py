@@ -7,7 +7,13 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
+import firebase_admin
+from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
+from pydantic import BaseModel
+from typing import List, Optional
 
+app = FastAPI(title="Punto Search Engine (Mini-Algolia)")
 # Habilitar CORS para que la app móvil o web pueda consultar sin bloqueos
 app.add_middleware(
     CORSMiddleware,
