@@ -45,48 +45,92 @@ elif os.path.exists(SERVICE_ACCOUNT_FILE):
 else:
     print(f"ADVERTENCIA: No se encontró '{SERVICE_ACCOUNT_FILE}' ni la variable FIREBASE_SERVICE_ACCOUNT. El endpoint /api/sync fallará.")
 
-# --- ACTIVE CACHE PARA EL ALGORITMO V2 ---
+# --- ACTIVE CACHE PARA EL ALGORITMO V3.2 ---
 TIME_RULES_CACHE = []
 MACRO_CLUSTERS_CACHE = {
     "desayuno": {
         "titles": ["Empieza el día con energía", "Mañanas deliciosas", "Despierta con sabor", "Para el desayuno"],
-        "keywords": "desayuno OR arepa OR pan OR cafe OR huevos OR tamal OR calentao OR pastel"
+        "keywords": "desayuno OR arepa OR pan OR cafe OR huevos OR tamal OR calentao OR jugo OR tostada OR pandebono OR almojabana OR empanada OR buñuelo",
+        "storeCategories": "Cafetería, Panaderia, Restaurante de desayunos, Desayunos",
+        "negativeKeywords": "",
+        "relatedClusters": "comida_rapida"
     },
     "comida_rapida": {
         "titles": ["Antojos Rápidos", "Para calmar el hambre", "Pecados deliciosos", "Tus favoritos"],
-        "keywords": "hamburguesa OR pizza OR perro caliente OR salchipapa OR frito OR pollo"
+        "keywords": "hamburguesa OR pizza OR salchipapa OR frito OR alitas OR nuggets OR shawarma OR wrap OR combo",
+        "storeCategories": "Restaurante, Comida Rápida, Hamburgueseria, Pizzeria",
+        "negativeKeywords": "",
+        "relatedClusters": "licores, saludable"
     },
     "saludable": {
         "titles": ["Cuida tu cuerpo", "Opciones Saludables", "Ligero y delicioso", "Para mantener la línea"],
-        "keywords": "ensalada OR bowl OR saludable OR vegano OR vegetariano OR light OR dieta"
+        "keywords": "ensalada OR bowl OR saludable OR vegano OR vegetariano OR light OR dieta OR acai OR proteina OR organico",
+        "storeCategories": "Restaurante Saludable, Jugos, Comida Saludable, Vegano",
+        "negativeKeywords": "",
+        "relatedClusters": "mercado"
     },
     "regalos": {
         "titles": ["Para esa persona especial", "Detalles que enamoran", "Sorpresas únicas", "Regalos inolvidables"],
-        "keywords": "regalo OR flor OR spa OR chocolate OR detalle OR aniversario OR peluche OR amor"
+        "keywords": "regalo OR flor OR spa OR detalle OR aniversario OR peluche OR amor OR flores OR arreglo OR canasta OR bouquet",
+        "storeCategories": "Regalería, Floristería, Spa, Detalles, Perfumeria",
+        "negativeKeywords": "chocolate OR torta OR pastel OR cake OR pan",
+        "relatedClusters": ""
     },
     "licores": {
         "titles": ["Para la fiesta", "Salud y celebración", "Prende la noche", "Tus bebidas favoritas"],
-        "keywords": "licor OR cerveza OR aguardiente OR ron OR vodka OR vino OR coctel OR fiesta OR hielo"
+        "keywords": "licor OR cerveza OR aguardiente OR ron OR vodka OR vino OR coctel OR fiesta OR hielo OR tequila OR whisky",
+        "storeCategories": "Licorería, Bar, Distribuidora de Licores",
+        "negativeKeywords": "",
+        "relatedClusters": "comida_rapida, snacks"
     },
     "farmacia": {
         "titles": ["Cuida de tu salud", "Farmacia en casa", "Lo que necesitas, rápido", "Alivio inmediato"],
-        "keywords": "farmacia OR medicamento OR pastilla OR dolor OR salud OR cuidado OR resaca OR guayabo OR suero"
+        "keywords": "farmacia OR medicamento OR pastilla OR dolor OR vitamina OR shampoo OR pañal OR crema OR jabon OR desodorante OR curitas OR antiseptico OR alcohol OR suero OR droga",
+        "storeCategories": "Farmacia, Drogueía, Cuidado Personal, Salud, Supermercado",
+        "negativeKeywords": "",
+        "relatedClusters": ""
     },
     "hogar": {
         "titles": ["Mejora tu hogar", "Todo para tu casa", "Remodela tu espacio", "Cuidado del hogar"],
-        "keywords": "mueble OR herramienta OR pintura OR decoracion OR limpieza OR aseo OR ferreteria OR destornillador"
+        "keywords": "mueble OR herramienta OR pintura OR decoracion OR ferreteria OR destornillador OR bombillo OR taladro OR llave OR tornillo OR cable OR electricidad",
+        "storeCategories": "Ferreteriía, Hogar, Materiales, Decoración",
+        "negativeKeywords": "jabon OR shampoo OR crema OR pañal OR medicamento",
+        "relatedClusters": ""
     },
     "mercado": {
         "titles": ["Directo a tu nevera", "Mercado fresco", "Llena tu despensa", "Frutas y verduras"],
-        "keywords": "mercado OR carne OR pollo OR verdura OR fruta OR lacteo OR viveres OR abarrotes"
+        "keywords": "mercado OR carne OR verdura OR fruta OR lacteo OR viveres OR abarrotes OR huevo OR arroz OR aceite OR sal OR papa OR platano",
+        "storeCategories": "Supermercado, Minimarket, Mercado, Carnicería, Fruver, Tienda",
+        "negativeKeywords": "pollo asado OR asadero OR restaurante",
+        "relatedClusters": "desayuno"
     },
     "mascotas": {
         "titles": ["Para el rey de la casa", "Mimos para tu peludo", "Cuidado animal", "Amor de 4 patas"],
-        "keywords": "mascota OR perro OR gato OR purina OR concentrado OR veterinaria OR pet"
+        "keywords": "mascota OR concentrado OR veterinaria OR pet OR pulgas OR collar OR juguete OR arena OR raza OR canino OR felino",
+        "storeCategories": "Veterinaria, Tienda de Mascotas, Pet Shop",
+        "negativeKeywords": "perro caliente OR hot dog OR salchicha",
+        "relatedClusters": ""
     },
     "ropa": {
         "titles": ["Completa tu clóset", "Renueva tu estilo", "Moda recomendada", "Tendencias"],
-        "keywords": "ropa OR camisa OR pantalon OR zapato OR tenis OR moda OR accesorio OR reloj OR gafas"
+        "keywords": "ropa OR camisa OR pantalon OR zapato OR tenis OR moda OR accesorio OR reloj OR gafas OR vestido OR falda OR chaqueta OR sudadera",
+        "storeCategories": "Ropa, Moda, Calzado, Boutique, Accesorios",
+        "negativeKeywords": "",
+        "relatedClusters": ""
+    },
+    "tecnologia": {
+        "titles": ["Gadgets para tu vida", "Tecnología al instante", "Lo último en tech", "Accesorios para tu celular"],
+        "keywords": "audifonos OR cargador OR cable OR funda OR celular OR tablet OR powerbank OR bluetooth OR usb OR memoria OR teclado OR mouse",
+        "storeCategories": "Tecnología, Electrónicos, Celulares, Accesorios Tech",
+        "negativeKeywords": "",
+        "relatedClusters": ""
+    },
+    "postres": {
+        "titles": ["Dulce tentación", "Antojos dulces", "El postre que mereces", "Algo dulce hoy"],
+        "keywords": "postre OR helado OR torta OR brownie OR cono OR malteada OR muffin OR cheesecake OR tiramisú OR flan OR crepe OR waffle",
+        "storeCategories": "Heladería, Pastelería, Café, Postres",
+        "negativeKeywords": "",
+        "relatedClusters": "comida_rapida, licores"
     }
 }
 
@@ -857,17 +901,51 @@ def get_dynamic_home_feed(uid: str):
             print(f"[Home Feed] Error en cluster {cluster}: {e}")
             continue
 
-    # 5. Los más Baratos (con deduplicación)
-    c.execute("""
-        SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-               p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-               s.name as storeName
-        FROM search_index p
-        LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-        WHERE p.type = 'product' AND CAST(p.price AS INTEGER) > 0
-        ORDER BY CAST(p.price AS INTEGER) ASC
-        LIMIT 20
-    """)
+    # 5. Los más Baratos DE LOS INTERESES del usuario (no globales)
+    # Construimos un query que combine los top clusters del usuario
+    cheap_fts_parts = []
+    for cluster in (top_clusters[:2] if top_clusters else list(MACRO_CLUSTERS_CACHE.keys())[:2]):
+        if cluster in MACRO_CLUSTERS_CACHE:
+            kws = MACRO_CLUSTERS_CACHE[cluster].get("keywords", "")
+            words = [w.strip() for w in kws.split(" OR ") if w.strip()]
+            cheap_fts_parts.extend([f'"{w}"*' for w in words[:5]])
+    
+    cheap_fts_q = " OR ".join(cheap_fts_parts) if cheap_fts_parts else None
+    
+    try:
+        if cheap_fts_q:
+            c.execute("""
+                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                       s.name as storeName
+                FROM search_index p
+                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                WHERE p.type = 'product' AND CAST(p.price AS INTEGER) > 0 AND search_index MATCH ?
+                ORDER BY CAST(p.price AS INTEGER) ASC
+                LIMIT 20
+            """, (cheap_fts_q,))
+        else:
+            c.execute("""
+                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                       s.name as storeName
+                FROM search_index p
+                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                WHERE p.type = 'product' AND CAST(p.price AS INTEGER) > 0
+                ORDER BY CAST(p.price AS INTEGER) ASC
+                LIMIT 20
+            """)
+    except:
+        c.execute("""
+            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                   s.name as storeName
+            FROM search_index p
+            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+            WHERE p.type = 'product' AND CAST(p.price AS INTEGER) > 0
+            ORDER BY CAST(p.price AS INTEGER) ASC
+            LIMIT 20
+        """)
     cheap_raw = c.fetchall()
     cheap_items = [dict(r) for r in cheap_raw if r["id"] not in global_seen_ids][:5]
     for r in cheap_items:
@@ -877,7 +955,7 @@ def get_dynamic_home_feed(uid: str):
             "id": "cheap_deals",
             "type": "products",
             "title": "¡Ahorra dinero!",
-            "subtitle": "Los más baratos del sistema",
+            "subtitle": "Los más baratos basado en tus gustos",
             "items": cheap_items
         })
 
@@ -1004,6 +1082,22 @@ def get_system_status():
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+@app.post("/api/reset-clusters")
+def reset_clusters_to_defaults():
+    """Empuja los defaults del código a Firestore, reemplazando los clústeres existentes.
+    Útil cuando los clústeres en Firestore están desactualizados (sin storeCategories, etc.)."""
+    if not db:
+        raise HTTPException(status_code=500, detail="Firebase no está inicializado.")
+    try:
+        doc_ref = db.collection('config').document('algorithm')
+        doc_ref.set({"clusters": MACRO_CLUSTERS_CACHE}, merge=True)
+        return {
+            "message": f"✅ {len(MACRO_CLUSTERS_CACHE)} clústeres reseteados a los defaults V3.2 correctamente.",
+            "clusters_pushed": list(MACRO_CLUSTERS_CACHE.keys())
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
 # ==========================================
