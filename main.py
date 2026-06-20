@@ -581,16 +581,16 @@ def simulate_home_feed(req: SimulateRequest):
     for rule in TIME_RULES_CACHE:
         sh = int(rule.get("startHour", 0))
         eh = int(rule.get("endHour", 23))
-        c = rule.get("cluster", "")
+        rule_cluster = rule.get("cluster", "")
         boost = float(rule.get("scoreBoost", 0))
         
-        if c in cluster_scores:
+        if rule_cluster in cluster_scores:
             if sh <= eh:
                 if sh <= current_hour <= eh:
-                    cluster_scores[c] += boost
+                    cluster_scores[rule_cluster] += boost
             else:
                 if current_hour >= sh or current_hour <= eh:
-                    cluster_scores[c] += boost
+                    cluster_scores[rule_cluster] += boost
         
     # 3. Selección 80/20 (Explotación vs Exploración)
     sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
@@ -688,16 +688,16 @@ def get_dynamic_home_feed(uid: str):
     for rule in TIME_RULES_CACHE:
         sh = int(rule.get("startHour", 0))
         eh = int(rule.get("endHour", 23))
-        c = rule.get("cluster", "")
+        rule_cluster = rule.get("cluster", "")
         boost = float(rule.get("scoreBoost", 0))
         
-        if c in cluster_scores:
+        if rule_cluster in cluster_scores:
             if sh <= eh:
                 if sh <= current_hour <= eh:
-                    cluster_scores[c] += boost
+                    cluster_scores[rule_cluster] += boost
             else:
                 if current_hour >= sh or current_hour <= eh:
-                    cluster_scores[c] += boost
+                    cluster_scores[rule_cluster] += boost
         
     # 3. Selección 80/20 (Explotación vs Exploración)
     sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
