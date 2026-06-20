@@ -362,7 +362,23 @@ def search(q: str = ""):
         rows = c.fetchall()
         results = [dict(row) for row in rows]
         
-        # FUZZY FALLBACK (Si no encontró nada y la query tiene al menos 3 letras)
+        # FALLBACK 1: LIKE Substring match (ideal para fragmentos como "ur" en "burguer")
+        if len(results) == 0 and len(safe_q) >= 2:
+            like_q = f"%{safe_q}%"
+            c.execute("""
+                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                       s.name as storeName
+                FROM search_index p
+                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                WHERE p.name LIKE ? OR p.category LIKE ? OR p.description LIKE ?
+                LIMIT 50
+            """, (like_q, like_q, like_q))
+            
+            rows_like = c.fetchall()
+            results = [dict(row) for row in rows_like]
+
+        # FALLBACK 2: FUZZY (Si no encontró nada y la query tiene al menos 3 letras)
         if len(results) == 0 and len(safe_q) >= 3:
             c.execute("""
                 SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
