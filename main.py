@@ -552,6 +552,86 @@ def index_store(payload: StorePayload):
         conn.close()
     return {"status": "indexed", "id": payload.id}
 
+def on_stores_snapshot(col_snapshot, changes, read_time):
+    with sqlite_lock:
+        try:
+            conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+            c = conn.cursor()
+            for change in changes:
+                doc = change.document
+                s_id = doc.id
+                if change.type.name in ['ADDED', 'MODIFIED']:
+                    s_data = doc.to_dict() or {}
+                    c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
+                    c.execute("""
+                        INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0)
+                    """, (
+                        s_id, 'store', s_id, 
+                        s_data.get('name', ''), 
+                        s_data.get('category', ''), 
+                        '', '', '', s_data.get('imageUrl', '')
+                    ))
+                elif change.type.name == 'REMOVED':
+                    c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
+            conn.commit()
+            conn.close()
+            print(f"[Realtime Sync] Procesados {len(changes)} cambios en Stores")
+        except Exception as e:
+            print(f"Error en on_stores_snapshot: {e}")
+
+def on_products_snapshot(col_snapshot, changes, read_time):
+    with sqlite_lock:
+        try:
+            conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+            c = conn.cursor()
+            for change in changes:
+                doc = change.document
+                p_id = doc.id
+                if change.type.name in ['ADDED', 'MODIFIED']:
+                    p_data = doc.to_dict() or {}
+                    path_parts = doc.reference.path.split('/')
+                    store_id = path_parts[1] if len(path_parts) >= 2 else ""
+                    
+                    c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (p_id,))
+                    c.execute("""
+                        INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        p_id, 'product', store_id, 
+                        p_data.get('name', ''), 
+                        p_data.get('category', ''), 
+                        p_data.get('description', ''), 
+                        str(p_data.get('price', '')),
+                        p_data.get('icon', ''),
+                        p_data.get('imageUrl', ''),
+                        1 if p_data.get('onSale') else 0,
+                        p_data.get('salePrice', None),
+                        p_data.get('likes', 0),
+                        p_data.get('views', 0),
+                        p_data.get('purchases', 0)
+                    ))
+                elif change.type.name == 'REMOVED':
+                    c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (p_id,))
+            conn.commit()
+            conn.close()
+            print(f"[Realtime Sync] Procesados {len(changes)} cambios en Products")
+        except Exception as e:
+            print(f"Error en on_products_snapshot: {e}")
+
+def start_firestore_listeners():
+    if not db:
+        print("Firebase no inicializado, no se pueden iniciar listeners.")
+        return
+    try:
+        db.collection("stores").on_snapshot(on_stores_snapshot)
+        db.collection_group("products").on_snapshot(on_products_snapshot)
+        print("Real-time listeners for Stores and Products started successfully.")
+    except Exception as e:
+        print(f"Error iniciando listeners: {e}")
+
 @app.on_event("startup")
 def startup_event():
     print("Search backend is ready. Push notifications listener has been removed to avoid duplicates.")
+    # Iniciar los listeners en background
+    threading.Thread(target=start_firestore_listeners, daemon=True).start()
