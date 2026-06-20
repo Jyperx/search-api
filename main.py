@@ -605,7 +605,8 @@ def on_stores_snapshot(col_snapshot, changes, read_time):
             print(f"Error en on_stores_snapshot: {e}")
 
 import time
-from datetime import datetime, timezone
+import threading
+from datetime import datetime, timezone, timedelta
 
 def delta_sync_loop():
     if not db:
@@ -701,7 +702,36 @@ def delta_sync_loop():
         # Dormir 60 segundos antes de volver a verificar
         time.sleep(60)
 
+def cleanup_activity_loop():
+    if not db:
+        return
+        
+    # Esperamos 1 minuto antes del primer barrido para no saturar el arranque
+    time.sleep(60)
+    
+    while True:
+        try:
+            # Eliminar actividad de más de 30 días
+            thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+            
+            old_activities = db.collection_group('activity').where(filter=FieldFilter("timestamp", "<", thirty_days_ago)).limit(500).stream()
+            
+            deleted_count = 0
+            for doc in old_activities:
+                doc.reference.delete()
+                deleted_count += 1
+                
+            if deleted_count > 0:
+                print(f"[Cleanup] Eliminados {deleted_count} registros de actividad antiguos.")
+                
+        except Exception as e:
+            print(f"[Cleanup Error]: Requiere índice. {e}")
+            
+        # Esperar 24 horas (86400 segundos)
+        time.sleep(86400)
+
 @app.on_event("startup")
 def startup_event():
-    print("Search backend is ready. Iniciando Delta Sync inteligente...")
+    print("Search backend is ready. Iniciando procesos en segundo plano...")
     threading.Thread(target=delta_sync_loop, daemon=True).start()
+    threading.Thread(target=cleanup_activity_loop, daemon=True).start()
