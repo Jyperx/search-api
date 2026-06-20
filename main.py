@@ -403,14 +403,20 @@ def search(q: str = ""):
     
     # === CEREBRO V2 INJECTION ===
     cluster_match = None
+    cluster_name = None
     for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
         if safe_q == c_key or safe_q in [k.strip().lower() for k in c_val.get("keywords", "").split(" OR ")]:
             cluster_match = c_val.get("keywords", "")
+            cluster_name = c_key
             break
             
     if cluster_match:
-        # Reemplazar la búsqueda por las palabras mágicas del clúster (ej: "cena" -> "pizza OR hamburguesa")
-        parts = [f'"{w.strip()}"*' for w in cluster_match.split(" OR ") if w.strip()]
+        # Añadimos también el nombre del clúster (ej: "farmacia") para que las tiendas que se llamen así también aparezcan
+        cluster_words = [w.strip() for w in cluster_match.split(" OR ") if w.strip()]
+        if cluster_name not in cluster_words:
+            cluster_words.append(cluster_name)
+            
+        parts = [f'"{w}"*' for w in cluster_words]
         fts_query = " OR ".join(parts)
     else:
         words = safe_q.split()
