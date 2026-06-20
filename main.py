@@ -46,6 +46,7 @@ else:
     print(f"ADVERTENCIA: No se encontró '{SERVICE_ACCOUNT_FILE}' ni la variable FIREBASE_SERVICE_ACCOUNT. El endpoint /api/sync fallará.")
 
 # --- ACTIVE CACHE PARA EL ALGORITMO V2 ---
+TIME_RULES_CACHE = []
 MACRO_CLUSTERS_CACHE = {
     "desayuno": {
         "titles": ["Empieza el día con energía", "Mañanas deliciosas", "Despierta con sabor", "Para el desayuno"],
@@ -91,11 +92,15 @@ MACRO_CLUSTERS_CACHE = {
 
 def on_algorithm_config_snapshot(doc_snapshot, changes, read_time):
     global MACRO_CLUSTERS_CACHE
+    global TIME_RULES_CACHE
     for doc in doc_snapshot:
         data = doc.to_dict()
-        if data and "clusters" in data:
-            MACRO_CLUSTERS_CACHE = data["clusters"]
-            print(f"🔥 MACRO_CLUSTERS actualizados en Memoria RAM desde Firebase. Clústeres activos: {len(MACRO_CLUSTERS_CACHE)}")
+        if data:
+            if "clusters" in data:
+                MACRO_CLUSTERS_CACHE = data["clusters"]
+            if "time_rules" in data:
+                TIME_RULES_CACHE = data["time_rules"]
+            print(f"🔥 Cerebro V2 RAM Actualizado. Clústeres: {len(MACRO_CLUSTERS_CACHE)} | Reglas: {len(TIME_RULES_CACHE)}")
 
 if db:
     doc_ref = db.collection('config').document('algorithm')
@@ -395,21 +400,31 @@ def search(q: str = ""):
     c = conn.cursor()
     
     safe_q = q.replace('"', '').replace("'", "").lower().strip()
-    words = safe_q.split()
-    expanded_parts = []
     
-    for word in words:
-        if word in REVERSE_SYNONYMS:
-            root = REVERSE_SYNONYMS[word]
-            syns = SYNONYMS[root]
-            # Formar grupo OR para FTS5
-            # Ej: ("hamburguesa"* OR "burger"* OR "burguer"*)
-            group = " OR ".join([f'"{s}"*' for s in syns])
-            expanded_parts.append(f"({group})")
-        else:
-            expanded_parts.append(f'"{word}"*')
+    # === CEREBRO V2 INJECTION ===
+    cluster_match = None
+    for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
+        if safe_q == c_key or safe_q in [k.strip().lower() for k in c_val.get("keywords", "").split(" OR ")]:
+            cluster_match = c_val.get("keywords", "")
+            break
             
-    fts_query = " ".join(expanded_parts)
+    if cluster_match:
+        # Reemplazar la búsqueda por las palabras mágicas del clúster (ej: "cena" -> "pizza OR hamburguesa")
+        parts = [f'"{w.strip()}"*' for w in cluster_match.split(" OR ") if w.strip()]
+        fts_query = " OR ".join(parts)
+    else:
+        words = safe_q.split()
+        expanded_parts = []
+        for word in words:
+            if word in REVERSE_SYNONYMS:
+                root = REVERSE_SYNONYMS[word]
+                syns = SYNONYMS[root]
+                group = " OR ".join([f'"{s}"*' for s in syns])
+                expanded_parts.append(f"({group})")
+            else:
+                expanded_parts.append(f'"{word}"*')
+                
+        fts_query = " ".join(expanded_parts)
     
     try:
         # Buscamos en todas las columnas y ordenamos por "rank" (relevancia automática de SQLite FTS5)
@@ -545,16 +560,20 @@ def simulate_home_feed(req: SimulateRequest):
             if cat in c_val['keywords'].lower() or cat == c_key:
                 cluster_scores[c_key] += score
                 
-    # 2. Conciencia Temporal (Context-Awareness)
-    if 6 <= current_hour <= 10:
-        if "desayuno" in cluster_scores: cluster_scores["desayuno"] += 15.0
-        if "farmacia" in cluster_scores: cluster_scores["farmacia"] += 5.0
-    elif 11 <= current_hour <= 15:
-        if "comida_rapida" in cluster_scores: cluster_scores["comida_rapida"] += 10.0
-        if "saludable" in cluster_scores: cluster_scores["saludable"] += 8.0
-    elif 18 <= current_hour <= 23 or current_hour < 4:
-        if "comida_rapida" in cluster_scores: cluster_scores["comida_rapida"] += 15.0
-        if "licores" in cluster_scores: cluster_scores["licores"] += 12.0
+    # 2. Conciencia Temporal (Context-Awareness) via TIME_RULES_CACHE
+    for rule in TIME_RULES_CACHE:
+        sh = int(rule.get("startHour", 0))
+        eh = int(rule.get("endHour", 23))
+        c = rule.get("cluster", "")
+        boost = float(rule.get("scoreBoost", 0))
+        
+        if c in cluster_scores:
+            if sh <= eh:
+                if sh <= current_hour <= eh:
+                    cluster_scores[c] += boost
+            else:
+                if current_hour >= sh or current_hour <= eh:
+                    cluster_scores[c] += boost
         
     # 3. Selección 80/20 (Explotación vs Exploración)
     sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
@@ -643,16 +662,20 @@ def get_dynamic_home_feed(uid: str):
         except Exception as e:
             print("Error leyendo actividad:", e)
             
-    # 2. Conciencia Temporal (Context-Awareness)
-    if 6 <= current_hour <= 10:
-        cluster_scores["desayuno"] += 15.0
-        cluster_scores["farmacia"] += 5.0
-    elif 11 <= current_hour <= 15:
-        cluster_scores["comida_rapida"] += 10.0
-        cluster_scores["saludable"] += 8.0
-    elif 18 <= current_hour <= 23 or current_hour < 4:
-        cluster_scores["comida_rapida"] += 15.0
-        cluster_scores["licores"] += 12.0
+    # 2. Conciencia Temporal (Context-Awareness) via TIME_RULES_CACHE
+    for rule in TIME_RULES_CACHE:
+        sh = int(rule.get("startHour", 0))
+        eh = int(rule.get("endHour", 23))
+        c = rule.get("cluster", "")
+        boost = float(rule.get("scoreBoost", 0))
+        
+        if c in cluster_scores:
+            if sh <= eh:
+                if sh <= current_hour <= eh:
+                    cluster_scores[c] += boost
+            else:
+                if current_hour >= sh or current_hour <= eh:
+                    cluster_scores[c] += boost
         
     # 3. Selección 80/20 (Explotación vs Exploración)
     sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
