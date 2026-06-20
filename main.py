@@ -45,6 +45,67 @@ elif os.path.exists(SERVICE_ACCOUNT_FILE):
 else:
     print(f"ADVERTENCIA: No se encontró '{SERVICE_ACCOUNT_FILE}' ni la variable FIREBASE_SERVICE_ACCOUNT. El endpoint /api/sync fallará.")
 
+# --- ACTIVE CACHE PARA EL ALGORITMO V2 ---
+MACRO_CLUSTERS_CACHE = {
+    "desayuno": {
+        "titles": ["Empieza el día con energía", "Mañanas deliciosas", "Despierta con sabor", "Para el desayuno"],
+        "keywords": "desayuno OR arepa OR pan OR cafe OR huevos OR tamal OR calentao OR pastel"
+    },
+    "comida_rapida": {
+        "titles": ["Antojos Rápidos", "Para calmar el hambre", "Pecados deliciosos", "Tus favoritos"],
+        "keywords": "hamburguesa OR pizza OR perro caliente OR salchipapa OR frito OR pollo"
+    },
+    "saludable": {
+        "titles": ["Cuida tu cuerpo", "Opciones Saludables", "Ligero y delicioso", "Para mantener la línea"],
+        "keywords": "ensalada OR bowl OR saludable OR vegano OR vegetariano OR light OR dieta"
+    },
+    "regalos": {
+        "titles": ["Para esa persona especial", "Detalles que enamoran", "Sorpresas únicas", "Regalos inolvidables"],
+        "keywords": "regalo OR flor OR spa OR chocolate OR detalle OR aniversario OR peluche OR amor"
+    },
+    "licores": {
+        "titles": ["Para la fiesta", "Salud y celebración", "Prende la noche", "Tus bebidas favoritas"],
+        "keywords": "licor OR cerveza OR aguardiente OR ron OR vodka OR vino OR coctel OR fiesta OR hielo"
+    },
+    "farmacia": {
+        "titles": ["Cuida de tu salud", "Farmacia en casa", "Lo que necesitas, rápido", "Alivio inmediato"],
+        "keywords": "farmacia OR medicamento OR pastilla OR dolor OR salud OR cuidado OR resaca OR guayabo OR suero"
+    },
+    "hogar": {
+        "titles": ["Mejora tu hogar", "Todo para tu casa", "Remodela tu espacio", "Cuidado del hogar"],
+        "keywords": "mueble OR herramienta OR pintura OR decoracion OR limpieza OR aseo OR ferreteria OR destornillador"
+    },
+    "mercado": {
+        "titles": ["Directo a tu nevera", "Mercado fresco", "Llena tu despensa", "Frutas y verduras"],
+        "keywords": "mercado OR carne OR pollo OR verdura OR fruta OR lacteo OR viveres OR abarrotes"
+    },
+    "mascotas": {
+        "titles": ["Para el rey de la casa", "Mimos para tu peludo", "Cuidado animal", "Amor de 4 patas"],
+        "keywords": "mascota OR perro OR gato OR purina OR concentrado OR veterinaria OR pet"
+    },
+    "ropa": {
+        "titles": ["Completa tu clóset", "Renueva tu estilo", "Moda recomendada", "Tendencias"],
+        "keywords": "ropa OR camisa OR pantalon OR zapato OR tenis OR moda OR accesorio OR reloj OR gafas"
+    }
+}
+
+def on_algorithm_config_snapshot(doc_snapshot, changes, read_time):
+    global MACRO_CLUSTERS_CACHE
+    for doc in doc_snapshot:
+        data = doc.to_dict()
+        if data and "clusters" in data:
+            MACRO_CLUSTERS_CACHE = data["clusters"]
+            print(f"🔥 MACRO_CLUSTERS actualizados en Memoria RAM desde Firebase. Clústeres activos: {len(MACRO_CLUSTERS_CACHE)}")
+
+if db:
+    doc_ref = db.collection('config').document('algorithm')
+    # Inicializar datos si no existen
+    doc_snap = doc_ref.get()
+    if not doc_snap.exists:
+        doc_ref.set({"clusters": MACRO_CLUSTERS_CACHE})
+    # Conectar el Listener en tiempo real
+    doc_watch = doc_ref.on_snapshot(on_algorithm_config_snapshot)
+
 # Configurar SQLite con FTS5 (Full-Text Search 5)
 # Soportar Persistent Volume en Railway
 VOLUME_PATH = os.getenv('RAILWAY_VOLUME_MOUNT_PATH', '')
@@ -449,48 +510,95 @@ def get_promotions():
     conn.close()
     return {"results": [dict(row) for row in rows]}
 
-MACRO_CLUSTERS = {
-    "desayuno": {
-        "titles": ["Empieza el día con energía", "Mañanas deliciosas", "Despierta con sabor", "Para el desayuno"],
-        "keywords": "desayuno OR arepa OR pan OR cafe OR huevos OR tamal OR calentao OR pastel"
-    },
-    "comida_rapida": {
-        "titles": ["Antojos Rápidos", "Para calmar el hambre", "Pecados deliciosos", "Tus favoritos"],
-        "keywords": "hamburguesa OR pizza OR perro caliente OR salchipapa OR frito OR pollo"
-    },
-    "saludable": {
-        "titles": ["Cuida tu cuerpo", "Opciones Saludables", "Ligero y delicioso", "Para mantener la línea"],
-        "keywords": "ensalada OR bowl OR saludable OR vegano OR vegetariano OR light OR dieta"
-    },
-    "regalos": {
-        "titles": ["Para esa persona especial", "Detalles que enamoran", "Sorpresas únicas", "Regalos inolvidables"],
-        "keywords": "regalo OR flor OR spa OR chocolate OR detalle OR aniversario OR peluche OR amor"
-    },
-    "licores": {
-        "titles": ["Para la fiesta", "Salud y celebración", "Prende la noche", "Tus bebidas favoritas"],
-        "keywords": "licor OR cerveza OR aguardiente OR ron OR vodka OR vino OR coctel OR fiesta OR hielo"
-    },
-    "farmacia": {
-        "titles": ["Cuida de tu salud", "Farmacia en casa", "Lo que necesitas, rápido", "Alivio inmediato"],
-        "keywords": "farmacia OR medicamento OR pastilla OR dolor OR salud OR cuidado OR resaca OR guayabo OR suero"
-    },
-    "hogar": {
-        "titles": ["Mejora tu hogar", "Todo para tu casa", "Remodela tu espacio", "Cuidado del hogar"],
-        "keywords": "mueble OR herramienta OR pintura OR decoracion OR limpieza OR aseo OR ferreteria OR destornillador"
-    },
-    "mercado": {
-        "titles": ["Directo a tu nevera", "Mercado fresco", "Llena tu despensa", "Frutas y verduras"],
-        "keywords": "mercado OR carne OR pollo OR verdura OR fruta OR lacteo OR viveres OR abarrotes"
-    },
-    "mascotas": {
-        "titles": ["Para el rey de la casa", "Mimos para tu peludo", "Cuidado animal", "Amor de 4 patas"],
-        "keywords": "mascota OR perro OR gato OR purina OR concentrado OR veterinaria OR pet"
-    },
-    "ropa": {
-        "titles": ["Completa tu clóset", "Renueva tu estilo", "Moda recomendada", "Tendencias"],
-        "keywords": "ropa OR camisa OR pantalon OR zapato OR tenis OR moda OR accesorio OR reloj OR gafas"
-    }
-}
+class SimulateActivity(BaseModel):
+    category: str
+    days_ago: int
+    is_search: bool = False
+
+class SimulateRequest(BaseModel):
+    current_hour: int
+    activities: List[SimulateActivity]
+
+@app.post("/api/simulate")
+def simulate_home_feed(req: SimulateRequest):
+    """Simulador para probar el Algoritmo V2 en el panel de Admin"""
+    feed_sections = []
+    
+    conn = sqlite3.connect(SQLITE_DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+        
+    cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
+    current_hour = req.current_hour
+    
+    # 1. Simular Actividades con Time-Decay
+    for act in req.activities:
+        cat = (act.category or '').lower()
+        multiplier = 1.0
+        if act.days_ago == 0: multiplier = 3.0
+        elif act.days_ago > 7: multiplier = 0.2
+        elif act.days_ago > 30: multiplier = 0.0
+        
+        score = (2.0 if act.is_search else 1.0) * multiplier
+        
+        for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
+            if cat in c_val['keywords'].lower() or cat == c_key:
+                cluster_scores[c_key] += score
+                
+    # 2. Conciencia Temporal (Context-Awareness)
+    if 6 <= current_hour <= 10:
+        if "desayuno" in cluster_scores: cluster_scores["desayuno"] += 15.0
+        if "farmacia" in cluster_scores: cluster_scores["farmacia"] += 5.0
+    elif 11 <= current_hour <= 15:
+        if "comida_rapida" in cluster_scores: cluster_scores["comida_rapida"] += 10.0
+        if "saludable" in cluster_scores: cluster_scores["saludable"] += 8.0
+    elif 18 <= current_hour <= 23 or current_hour < 4:
+        if "comida_rapida" in cluster_scores: cluster_scores["comida_rapida"] += 15.0
+        if "licores" in cluster_scores: cluster_scores["licores"] += 12.0
+        
+    # 3. Selección 80/20 (Explotación vs Exploración)
+    sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
+    top_clusters = sorted_clusters[:2]
+    
+    unvisited = [k for k in MACRO_CLUSTERS_CACHE.keys() if k not in top_clusters]
+    exploration_cluster = random.choice(unvisited) if unvisited else None
+    
+    selected_clusters = top_clusters.copy()
+    if exploration_cluster:
+        selected_clusters.append(exploration_cluster)
+        
+    if not selected_clusters:
+        selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
+        
+    # 4. Construir Secciones Dinámicas
+    for cluster in selected_clusters:
+        if cluster not in MACRO_CLUSTERS_CACHE: continue
+        keywords = MACRO_CLUSTERS_CACHE[cluster]["keywords"]
+        title = random.choice(MACRO_CLUSTERS_CACHE[cluster]["titles"])
+        subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else "Basado en tus intereses"
+        
+        c.execute("""
+            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                   s.name as storeName
+            FROM search_index p
+            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+            WHERE p.type = 'product' AND search_index MATCH ?
+            ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
+            LIMIT 5
+        """, (keywords,))
+        items = c.fetchall()
+        if items:
+            feed_sections.append({
+                "id": f"dyn_{cluster}",
+                "type": "products",
+                "title": title,
+                "subtitle": subtitle,
+                "items": [dict(row) for row in items]
+            })
+            
+    conn.close()
+    return {"sections": feed_sections}
 
 @app.get("/api/home/{uid}")
 def get_dynamic_home_feed(uid: str):
@@ -502,7 +610,7 @@ def get_dynamic_home_feed(uid: str):
     c = conn.cursor()
         
     # 1. Leer Intenciones (Actividad) y aplicar Time-Decay
-    cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS.keys()}
+    cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
     now = datetime.now(timezone.utc)
     current_hour = (now.hour - 5) % 24  # UTC-5 (Colombia)
     
@@ -529,7 +637,7 @@ def get_dynamic_home_feed(uid: str):
                 score = (2.0 if data.get('type') == 'search' else 1.0) * multiplier
                 
                 # Match activity category to our MACRO_CLUSTERS
-                for c_key, c_val in MACRO_CLUSTERS.items():
+                for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
                     if cat in c_val['keywords'].lower() or cat == c_key:
                         cluster_scores[c_key] += score
         except Exception as e:
@@ -550,7 +658,7 @@ def get_dynamic_home_feed(uid: str):
     sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
     top_clusters = sorted_clusters[:2]
     
-    unvisited = [k for k in MACRO_CLUSTERS.keys() if k not in top_clusters]
+    unvisited = [k for k in MACRO_CLUSTERS_CACHE.keys() if k not in top_clusters]
     exploration_cluster = random.choice(unvisited) if unvisited else None
     
     selected_clusters = top_clusters.copy()
@@ -559,12 +667,13 @@ def get_dynamic_home_feed(uid: str):
         
     # Fallback si no hay clusters seleccionados (ej: cuenta nueva y hora neutra)
     if not selected_clusters:
-        selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS.keys()))]
+        selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
         
     # 4. Construir Secciones Dinámicas con FTS5 MATCH
     for cluster in selected_clusters:
-        keywords = MACRO_CLUSTERS[cluster]["keywords"]
-        title = random.choice(MACRO_CLUSTERS[cluster]["titles"])
+        if cluster not in MACRO_CLUSTERS_CACHE: continue
+        keywords = MACRO_CLUSTERS_CACHE[cluster]["keywords"]
+        title = random.choice(MACRO_CLUSTERS_CACHE[cluster]["titles"])
         subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else "Basado en tus intereses"
         
         c.execute("""
