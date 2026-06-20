@@ -146,6 +146,7 @@ SYNONYMS = {
     "celular": ["celular", "telefono", "smartphone", "iphone", "android", "movil", "xiaomi", "samsung", "motorola", "huawei"],
     "pantalla": ["pantalla", "display", "monitor", "tv", "televisor", "glass", "vidrio templado", "visor"],
     "bateria": ["bateria", "pila", "powerbank"],
+    "regalo": ["regalo", "mama", "mamá", "madre", "cumpleaños", "aniversario", "floristeria", "flores", "spa", "chocolates", "detalle", "regalos"],
     "computador": ["computador", "pc", "laptop", "portatil", "computadora", "teclado", "mouse", "raton", "impresora"],
     "memoria": ["memoria", "usb", "microsd", "pendrive", "disco duro", "ssd"],
     "funda": ["funda", "estuche", "carcasa", "forro", "case", "protector"]
@@ -445,6 +446,143 @@ def get_promotions():
     rows = c.fetchall()
     conn.close()
     return {"results": [dict(row) for row in rows]}
+
+CATEGORY_MAPPING = {
+    "Restaurante": {"title": "Antojos Rápidos", "subtitle": "Tus restaurantes favoritos"},
+    "Comidas rápidas": {"title": "Antojos Rápidos", "subtitle": "Tus favoritos"},
+    "Ropa y Accesorios": {"title": "Completa tu clóset", "subtitle": "Moda recomendada"},
+    "Spa & Belleza": {"title": "Para esa persona especial", "subtitle": "Regalos y cuidado personal"},
+    "Floristería": {"title": "Detalles que enamoran", "subtitle": "Flores y regalos"},
+    "Tecnología": {"title": "Actualiza tu mundo", "subtitle": "Lo mejor en tecnología"},
+    "Mercados": {"title": "Directo a tu nevera", "subtitle": "Mercado recomendado"},
+    "Licores": {"title": "Para la fiesta", "subtitle": "Licores y bebidas"},
+    "Mascotas": {"title": "Para tu peludo", "subtitle": "Pet shop recomendado"},
+    "Farmacia": {"title": "Cuida de tu salud", "subtitle": "Farmacias recomendadas"},
+    "Regalos": {"title": "Para esa persona especial", "subtitle": "Detalles únicos"}
+}
+
+@app.get("/api/home/{uid}")
+def get_dynamic_home_feed(uid: str):
+    """Devuelve el inicio completo (Home Feed) basado en intenciones."""
+    feed_sections = []
+    
+    conn = sqlite3.connect(SQLITE_DB)
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+        
+    # 1. Leer Intenciones (Actividad)
+    top_categories = []
+    if db:
+        try:
+            activities = db.collection('users').document(uid).collection('activity').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(50).stream()
+            category_scores = {}
+            for act in activities:
+                data = act.to_dict()
+                cat = data.get('category')
+                if cat and cat != 'General':
+                    score = 2 if data.get('type') == 'search' else 1
+                    category_scores[cat] = category_scores.get(cat, 0) + score
+            if category_scores:
+                top_categories = sorted(category_scores.keys(), key=lambda k: category_scores[k], reverse=True)[:2]
+        except Exception as e:
+            print("Error leyendo actividad:", e)
+            
+    # 3. Construir Secciones Dinámicas basadas en Top Categories
+    dynamic_sections_added = 0
+    for cat in top_categories:
+        c.execute("""
+            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                   s.name as storeName
+            FROM search_index p
+            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+            WHERE p.type = 'product' AND p.category = ?
+            ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
+            LIMIT 5
+        """, (cat,))
+        items = c.fetchall()
+        if len(items) > 0:
+            mapping = CATEGORY_MAPPING.get(cat, {"title": f"Destacados en {cat}", "subtitle": "Basado en tus intereses"})
+            feed_sections.append({
+                "id": f"dynamic_{cat}",
+                "type": "products",
+                "title": mapping["title"],
+                "subtitle": mapping["subtitle"],
+                "items": [dict(row) for row in items]
+            })
+            dynamic_sections_added += 1
+
+    # 4. Fallback si no hay intenciones suficientes o completamos
+    if dynamic_sections_added < 2:
+        c.execute("""
+            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                   s.name as storeName
+            FROM search_index p
+            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+            WHERE p.type = 'product'
+            ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
+            LIMIT 5
+        """)
+        items = c.fetchall()
+        if items:
+            feed_sections.append({
+                "id": "recommended",
+                "type": "products",
+                "title": "Recomendado para ti",
+                "subtitle": "Lo más popular de la ciudad",
+                "items": [dict(row) for row in items]
+            })
+
+    # 5. Los más Baratos
+    c.execute("""
+        SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+               p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+               s.name as storeName
+        FROM search_index p
+        LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+        WHERE p.type = 'product' AND CAST(p.price AS INTEGER) > 0
+        ORDER BY CAST(p.price AS INTEGER) ASC
+        LIMIT 5
+    """)
+    cheap_items = c.fetchall()
+    if cheap_items:
+        feed_sections.append({
+            "id": "cheap_deals",
+            "type": "products",
+            "title": "¡Ahorra dinero!",
+            "subtitle": "Los más baratos del sistema",
+            "items": [dict(row) for row in cheap_items]
+        })
+
+    # 6. Comercios Destacados (Limitado)
+    c.execute("""
+        SELECT id, type, storeId, name, category, description, price, icon, imageUrl as logoUrl
+        FROM search_index
+        WHERE type = 'store'
+        LIMIT 15
+    """)
+    stores = c.fetchall()
+    if stores:
+        store_list = []
+        for s in stores:
+            s_dict = dict(s)
+            s_dict['open'] = True # Mocking open state since search_index doesn't track it yet, or default to True
+            s_dict['time'] = '15-30 min'
+            s_dict['rating'] = 4.5
+            s_dict['deliveryFee'] = 0
+            store_list.append(s_dict)
+            
+        feed_sections.append({
+            "id": "stores",
+            "type": "stores",
+            "title": "Cerca de ti",
+            "subtitle": "Lugares recomendados en tu zona",
+            "items": store_list
+        })
+        
+    conn.close()
+    return {"sections": feed_sections}
 
 @app.get("/api/recommendations/{uid}")
 def get_user_recommendations(uid: str):
