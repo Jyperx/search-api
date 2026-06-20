@@ -411,10 +411,11 @@ def build_cluster_fts_query(cluster_name, c_val, include_cluster_name=True):
     store_cats_str = c_val.get("storeCategories", "")
     cat_parts = []
     if store_cats_str:
-        cats = [c.strip() for c in store_cats_str.split(",") if c.strip()]
+        cats = [cat.strip() for cat in store_cats_str.split(",") if cat.strip()]
         if cats:
-            cat_group = " OR ".join([f'"{c}"*' for c in cats])
-            cat_parts.append(f"category : ({cat_group})")
+            # FTS5 column filter syntax: {column} : "term"*
+            cat_terms = " OR ".join([f'"{cat}"*' for cat in cats])
+            cat_parts.append(f"{{category}} : ({cat_terms})")
             
     fts_query_parts = []
     if cat_parts:
@@ -654,7 +655,7 @@ def simulate_home_feed(req: SimulateRequest):
     if not selected_clusters:
         selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
         
-    # 4. Construir Secciones Dinámicas
+    # 4. Construir Secciones Dinámicas (Simulador)
     for cluster in selected_clusters:
         if cluster not in MACRO_CLUSTERS_CACHE: continue
         
@@ -664,30 +665,47 @@ def simulate_home_feed(req: SimulateRequest):
         title = random.choice(MACRO_CLUSTERS_CACHE[cluster].get("titles", ["Para ti"]))
         subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else ("Combina perfecto" if cluster in cross_sell_clusters else "Basado en tus intereses")
         
-        c.execute("""
-            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                   s.name as storeName
-            FROM search_index p
-            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-            WHERE p.type = 'product' AND search_index MATCH ?
-            ORDER BY 
-                (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
-                (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
-                (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
-                (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
-                ABS(RANDOM() % 20) DESC
-            LIMIT 5
-        """, (fts_query,))
-        items = c.fetchall()
-        if items:
-            feed_sections.append({
-                "id": f"dyn_{cluster}",
-                "type": "products",
-                "title": title,
-                "subtitle": subtitle,
-                "items": [dict(row) for row in items]
-            })
+        try:
+            c.execute("""
+                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                       s.name as storeName
+                FROM search_index p
+                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                WHERE p.type = 'product' AND search_index MATCH ?
+                ORDER BY 
+                    (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
+                    (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
+                    (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
+                    (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
+                    ABS(RANDOM() % 20) DESC
+                LIMIT 15
+            """, (fts_query,))
+            raw_items = c.fetchall()
+            
+            # Diversidad: máx 2 productos por tienda
+            store_counts = {}
+            filtered_items = []
+            for row in raw_items:
+                sid = row["storeId"]
+                if store_counts.get(sid, 0) < 2:
+                    filtered_items.append(dict(row))
+                    store_counts[sid] = store_counts.get(sid, 0) + 1
+                if len(filtered_items) >= 5:
+                    break
+                    
+            if filtered_items:
+                feed_sections.append({
+                    "id": f"dyn_{cluster}",
+                    "type": "products",
+                    "title": title,
+                    "subtitle": subtitle,
+                    "section_type": "exploration" if cluster == exploration_cluster else ("cross_sell" if cluster in cross_sell_clusters else "interest"),
+                    "items": filtered_items
+                })
+        except Exception as e:
+            print(f"[Simulate] Error en cluster {cluster}: {e}")
+            continue
             
     conn.close()
     return {"sections": feed_sections}
@@ -781,6 +799,9 @@ def get_dynamic_home_feed(uid: str):
         selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
         
     # 4. Construir Secciones Dinámicas con FTS5 MATCH
+    # Set global para evitar duplicados entre secciones
+    global_seen_ids = set()
+    
     for cluster in selected_clusters:
         if cluster not in MACRO_CLUSTERS_CACHE: continue
         
@@ -790,32 +811,53 @@ def get_dynamic_home_feed(uid: str):
         title = random.choice(MACRO_CLUSTERS_CACHE[cluster].get("titles", ["Para ti"]))
         subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else ("Combina perfecto" if cluster in cross_sell_clusters else "Basado en tus intereses")
         
-        c.execute("""
-            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                   s.name as storeName
-            FROM search_index p
-            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-            WHERE p.type = 'product' AND search_index MATCH ?
-            ORDER BY 
-                (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
-                (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
-                (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
-                (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
-                ABS(RANDOM() % 20) DESC
-            LIMIT 5
-        """, (fts_query,))
-        items = c.fetchall()
-        if items:
-            feed_sections.append({
-                "id": f"dyn_{cluster}",
-                "type": "products",
-                "title": title,
-                "subtitle": subtitle,
-                "items": [dict(row) for row in items]
-            })
+        try:
+            c.execute("""
+                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                       s.name as storeName
+                FROM search_index p
+                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                WHERE p.type = 'product' AND search_index MATCH ?
+                ORDER BY 
+                    (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
+                    (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
+                    (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
+                    (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
+                    ABS(RANDOM() % 20) DESC
+                LIMIT 20
+            """, (fts_query,))
+            raw_items = c.fetchall()
+            
+            # Bug #5: Deduplicación entre secciones + Bug #6: diversidad (máx 2 por tienda)
+            store_counts = {}
+            filtered_items = []
+            for row in raw_items:
+                rid = row["id"]
+                sid = row["storeId"]
+                if rid in global_seen_ids:
+                    continue  # Ya apareció en una sección anterior
+                if store_counts.get(sid, 0) >= 2:
+                    continue  # Esta tienda ya tiene 2 productos en esta sección
+                filtered_items.append(dict(row))
+                global_seen_ids.add(rid)
+                store_counts[sid] = store_counts.get(sid, 0) + 1
+                if len(filtered_items) >= 5:
+                    break
+                    
+            if filtered_items:
+                feed_sections.append({
+                    "id": f"dyn_{cluster}",
+                    "type": "products",
+                    "title": title,
+                    "subtitle": subtitle,
+                    "items": filtered_items
+                })
+        except Exception as e:
+            print(f"[Home Feed] Error en cluster {cluster}: {e}")
+            continue
 
-    # 5. Los más Baratos
+    # 5. Los más Baratos (con deduplicación)
     c.execute("""
         SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
@@ -824,19 +866,22 @@ def get_dynamic_home_feed(uid: str):
         LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
         WHERE p.type = 'product' AND CAST(p.price AS INTEGER) > 0
         ORDER BY CAST(p.price AS INTEGER) ASC
-        LIMIT 5
+        LIMIT 20
     """)
-    cheap_items = c.fetchall()
+    cheap_raw = c.fetchall()
+    cheap_items = [dict(r) for r in cheap_raw if r["id"] not in global_seen_ids][:5]
+    for r in cheap_items:
+        global_seen_ids.add(r["id"])
     if cheap_items:
         feed_sections.append({
             "id": "cheap_deals",
             "type": "products",
             "title": "¡Ahorra dinero!",
             "subtitle": "Los más baratos del sistema",
-            "items": [dict(row) for row in cheap_items]
+            "items": cheap_items
         })
 
-    # 6. Comercios Destacados (Limitado)
+    # 6. Comercios Destacados
     c.execute("""
         SELECT id, type, storeId, name, category, description, price, icon, imageUrl as logoUrl
         FROM search_index
@@ -852,7 +897,7 @@ def get_dynamic_home_feed(uid: str):
         store_list = []
         for s in stores:
             s_dict = dict(s)
-            s_dict['open'] = True # Mocking open state since search_index doesn't track it yet, or default to True
+            s_dict['open'] = True
             s_dict['time'] = '15-30 min'
             s_dict['rating'] = 4.5
             s_dict['deliveryFee'] = 0
@@ -922,6 +967,43 @@ def get_user_recommendations(uid: str):
     except Exception as e:
         print(f"Error generando recomendaciones para {uid}:", e)
         return get_popular_products()
+
+@app.get("/api/status")
+def get_system_status():
+    """Devuelve métricas del estado del sistema para el panel de administración."""
+    try:
+        conn = sqlite3.connect(SQLITE_DB)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) as total FROM search_index WHERE type='product'")
+        total_products = c.fetchone()["total"]
+        
+        c.execute("SELECT COUNT(*) as total FROM search_index WHERE type='store'")
+        total_stores = c.fetchone()["total"]
+        
+        c.execute("SELECT COUNT(*) as total FROM promotions")
+        total_promotions = c.fetchone()["total"]
+        
+        c.execute("SELECT value FROM metadata WHERE key='last_sync_time'")
+        row = c.fetchone()
+        last_sync = row["value"] if row else "Nunca"
+        
+        conn.close()
+        
+        return {
+            "status": "ok",
+            "cerebro_version": "V3.2",
+            "total_products": total_products,
+            "total_stores": total_stores,
+            "total_promotions": total_promotions,
+            "total_clusters": len(MACRO_CLUSTERS_CACHE),
+            "total_time_rules": len(TIME_RULES_CACHE),
+            "last_sync": last_sync,
+            "sqlite_db": SQLITE_DB,
+        }
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 # ==========================================
 # ==========================================
