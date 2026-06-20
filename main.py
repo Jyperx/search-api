@@ -2,15 +2,11 @@ import os
 import sqlite3
 import json
 import difflib
+import random
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-import firebase_admin
-from firebase_admin import credentials, firestore
-from google.cloud.firestore_v1.base_query import FieldFilter
-from pydantic import BaseModel
-from typing import List, Optional
-
-app = FastAPI(title="Punto Search Engine (Mini-Algolia)")
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # Habilitar CORS para que la app móvil o web pueda consultar sin bloqueos
 app.add_middleware(
@@ -447,90 +443,141 @@ def get_promotions():
     conn.close()
     return {"results": [dict(row) for row in rows]}
 
-CATEGORY_MAPPING = {
-    "Restaurante": {"title": "Antojos Rápidos", "subtitle": "Tus restaurantes favoritos"},
-    "Comidas rápidas": {"title": "Antojos Rápidos", "subtitle": "Tus favoritos"},
-    "Ropa y Accesorios": {"title": "Completa tu clóset", "subtitle": "Moda recomendada"},
-    "Spa & Belleza": {"title": "Para esa persona especial", "subtitle": "Regalos y cuidado personal"},
-    "Floristería": {"title": "Detalles que enamoran", "subtitle": "Flores y regalos"},
-    "Tecnología": {"title": "Actualiza tu mundo", "subtitle": "Lo mejor en tecnología"},
-    "Mercados": {"title": "Directo a tu nevera", "subtitle": "Mercado recomendado"},
-    "Licores": {"title": "Para la fiesta", "subtitle": "Licores y bebidas"},
-    "Mascotas": {"title": "Para tu peludo", "subtitle": "Pet shop recomendado"},
-    "Farmacia": {"title": "Cuida de tu salud", "subtitle": "Farmacias recomendadas"},
-    "Regalos": {"title": "Para esa persona especial", "subtitle": "Detalles únicos"}
+MACRO_CLUSTERS = {
+    "desayuno": {
+        "titles": ["Empieza el día con energía", "Mañanas deliciosas", "Despierta con sabor", "Para el desayuno"],
+        "keywords": "desayuno OR arepa OR pan OR cafe OR huevos OR tamal OR calentao OR pastel"
+    },
+    "comida_rapida": {
+        "titles": ["Antojos Rápidos", "Para calmar el hambre", "Pecados deliciosos", "Tus favoritos"],
+        "keywords": "hamburguesa OR pizza OR perro caliente OR salchipapa OR frito OR pollo"
+    },
+    "saludable": {
+        "titles": ["Cuida tu cuerpo", "Opciones Saludables", "Ligero y delicioso", "Para mantener la línea"],
+        "keywords": "ensalada OR bowl OR saludable OR vegano OR vegetariano OR light OR dieta"
+    },
+    "regalos": {
+        "titles": ["Para esa persona especial", "Detalles que enamoran", "Sorpresas únicas", "Regalos inolvidables"],
+        "keywords": "regalo OR flor OR spa OR chocolate OR detalle OR aniversario OR peluche OR amor"
+    },
+    "licores": {
+        "titles": ["Para la fiesta", "Salud y celebración", "Prende la noche", "Tus bebidas favoritas"],
+        "keywords": "licor OR cerveza OR aguardiente OR ron OR vodka OR vino OR coctel OR fiesta OR hielo"
+    },
+    "farmacia": {
+        "titles": ["Cuida de tu salud", "Farmacia en casa", "Lo que necesitas, rápido", "Alivio inmediato"],
+        "keywords": "farmacia OR medicamento OR pastilla OR dolor OR salud OR cuidado OR resaca OR guayabo OR suero"
+    },
+    "hogar": {
+        "titles": ["Mejora tu hogar", "Todo para tu casa", "Remodela tu espacio", "Cuidado del hogar"],
+        "keywords": "mueble OR herramienta OR pintura OR decoracion OR limpieza OR aseo OR ferreteria OR destornillador"
+    },
+    "mercado": {
+        "titles": ["Directo a tu nevera", "Mercado fresco", "Llena tu despensa", "Frutas y verduras"],
+        "keywords": "mercado OR carne OR pollo OR verdura OR fruta OR lacteo OR viveres OR abarrotes"
+    },
+    "mascotas": {
+        "titles": ["Para el rey de la casa", "Mimos para tu peludo", "Cuidado animal", "Amor de 4 patas"],
+        "keywords": "mascota OR perro OR gato OR purina OR concentrado OR veterinaria OR pet"
+    },
+    "ropa": {
+        "titles": ["Completa tu clóset", "Renueva tu estilo", "Moda recomendada", "Tendencias"],
+        "keywords": "ropa OR camisa OR pantalon OR zapato OR tenis OR moda OR accesorio OR reloj OR gafas"
+    }
 }
 
 @app.get("/api/home/{uid}")
 def get_dynamic_home_feed(uid: str):
-    """Devuelve el inicio completo (Home Feed) basado en intenciones."""
+    """Devuelve el inicio completo (Home Feed) basado en el Algoritmo V2.0 (Time-Decay, Context, FTS5)."""
     feed_sections = []
     
     conn = sqlite3.connect(SQLITE_DB)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
         
-    # 1. Leer Intenciones (Actividad)
-    top_categories = []
+    # 1. Leer Intenciones (Actividad) y aplicar Time-Decay
+    cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS.keys()}
+    now = datetime.now(timezone.utc)
+    current_hour = (now.hour - 5) % 24  # UTC-5 (Colombia)
+    
     if db:
         try:
-            activities = db.collection('users').document(uid).collection('activity').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(50).stream()
-            category_scores = {}
+            # Leer ultimos 100 eventos de actividad del usuario
+            activities = db.collection('users').document(uid).collection('activity').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(100).stream()
             for act in activities:
                 data = act.to_dict()
-                cat = data.get('category')
-                if cat and cat != 'General':
-                    score = 2 if data.get('type') == 'search' else 1
-                    category_scores[cat] = category_scores.get(cat, 0) + score
-            if category_scores:
-                top_categories = sorted(category_scores.keys(), key=lambda k: category_scores[k], reverse=True)[:2]
+                cat = (data.get('category') or '').lower()
+                ts = data.get('timestamp')
+                
+                # Time-Decay Weighting
+                multiplier = 1.0
+                if ts:
+                    try:
+                        days_ago = (now - ts).days
+                        if days_ago == 0: multiplier = 3.0
+                        elif days_ago > 7: multiplier = 0.2
+                        elif days_ago > 30: multiplier = 0.0
+                    except:
+                        pass
+                
+                score = (2.0 if data.get('type') == 'search' else 1.0) * multiplier
+                
+                # Match activity category to our MACRO_CLUSTERS
+                for c_key, c_val in MACRO_CLUSTERS.items():
+                    if cat in c_val['keywords'].lower() or cat == c_key:
+                        cluster_scores[c_key] += score
         except Exception as e:
             print("Error leyendo actividad:", e)
             
-    # 3. Construir Secciones Dinámicas basadas en Top Categories
-    dynamic_sections_added = 0
-    for cat in top_categories:
+    # 2. Conciencia Temporal (Context-Awareness)
+    if 6 <= current_hour <= 10:
+        cluster_scores["desayuno"] += 15.0
+        cluster_scores["farmacia"] += 5.0
+    elif 11 <= current_hour <= 15:
+        cluster_scores["comida_rapida"] += 10.0
+        cluster_scores["saludable"] += 8.0
+    elif 18 <= current_hour <= 23 or current_hour < 4:
+        cluster_scores["comida_rapida"] += 15.0
+        cluster_scores["licores"] += 12.0
+        
+    # 3. Selección 80/20 (Explotación vs Exploración)
+    sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
+    top_clusters = sorted_clusters[:2]
+    
+    unvisited = [k for k in MACRO_CLUSTERS.keys() if k not in top_clusters]
+    exploration_cluster = random.choice(unvisited) if unvisited else None
+    
+    selected_clusters = top_clusters.copy()
+    if exploration_cluster:
+        selected_clusters.append(exploration_cluster)
+        
+    # Fallback si no hay clusters seleccionados (ej: cuenta nueva y hora neutra)
+    if not selected_clusters:
+        selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS.keys()))]
+        
+    # 4. Construir Secciones Dinámicas con FTS5 MATCH
+    for cluster in selected_clusters:
+        keywords = MACRO_CLUSTERS[cluster]["keywords"]
+        title = random.choice(MACRO_CLUSTERS[cluster]["titles"])
+        subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else "Basado en tus intereses"
+        
         c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                    p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
                    s.name as storeName
             FROM search_index p
             LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-            WHERE p.type = 'product' AND p.category = ?
+            WHERE p.type = 'product' AND search_index MATCH ?
             ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
             LIMIT 5
-        """, (cat,))
-        items = c.fetchall()
-        if len(items) > 0:
-            mapping = CATEGORY_MAPPING.get(cat, {"title": f"Destacados en {cat}", "subtitle": "Basado en tus intereses"})
-            feed_sections.append({
-                "id": f"dynamic_{cat}",
-                "type": "products",
-                "title": mapping["title"],
-                "subtitle": mapping["subtitle"],
-                "items": [dict(row) for row in items]
-            })
-            dynamic_sections_added += 1
-
-    # 4. Fallback si no hay intenciones suficientes o completamos
-    if dynamic_sections_added < 2:
-        c.execute("""
-            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                   s.name as storeName
-            FROM search_index p
-            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-            WHERE p.type = 'product'
-            ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
-            LIMIT 5
-        """)
+        """, (keywords,))
         items = c.fetchall()
         if items:
             feed_sections.append({
-                "id": "recommended",
+                "id": f"dyn_{cluster}",
                 "type": "products",
-                "title": "Recomendado para ti",
-                "subtitle": "Lo más popular de la ciudad",
+                "title": title,
+                "subtitle": subtitle,
                 "items": [dict(row) for row in items]
             })
 
