@@ -388,6 +388,45 @@ def sync_store(store_id: str):
     conn.close()
     return {"message": f"Comercio {store_id} sincronizado", "items_indexed": count}
 
+def build_cluster_fts_query(cluster_name, c_val, include_cluster_name=True):
+    cluster_match = c_val.get("keywords", "")
+    cluster_words = [w.strip() for w in cluster_match.split(" OR ") if w.strip()]
+    
+    if include_cluster_name and cluster_name not in cluster_words:
+        cluster_words.append(cluster_name)
+        
+    parts = [f'"{w}"*' for w in cluster_words]
+    if not parts:
+        return ""
+    base_fts = " OR ".join(parts)
+    
+    neg_keywords_str = c_val.get("negativeKeywords", "")
+    neg_parts = []
+    if neg_keywords_str:
+        neg_words = [w.strip() for w in neg_keywords_str.split(" OR ") if w.strip()]
+        if neg_words:
+            neg_group = " OR ".join([f'"{w}"*' for w in neg_words])
+            neg_parts.append(f"NOT ({neg_group})")
+            
+    store_cats_str = c_val.get("storeCategories", "")
+    cat_parts = []
+    if store_cats_str:
+        cats = [c.strip() for c in store_cats_str.split(",") if c.strip()]
+        if cats:
+            cat_group = " OR ".join([f'"{c}"*' for c in cats])
+            cat_parts.append(f"{{category}} : ({cat_group})")
+            
+    fts_query_parts = []
+    if cat_parts:
+        fts_query_parts.append(f"({cat_parts[0]}) AND ({base_fts})")
+    else:
+        fts_query_parts.append(f"({base_fts})")
+        
+    if neg_parts:
+        fts_query_parts.append(neg_parts[0])
+        
+    return " ".join(fts_query_parts)
+
 @app.get("/api/search")
 def search(q: str = ""):
     """Busca en milisegundos en el índice FTS5 usando sinónimos y Fuzzy Match."""
@@ -406,18 +445,12 @@ def search(q: str = ""):
     cluster_name = None
     for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
         if safe_q == c_key or safe_q in [k.strip().lower() for k in c_val.get("keywords", "").split(" OR ")]:
-            cluster_match = c_val.get("keywords", "")
+            cluster_match = True
             cluster_name = c_key
             break
             
     if cluster_match:
-        # Añadimos también el nombre del clúster (ej: "farmacia") para que las tiendas que se llamen así también aparezcan
-        cluster_words = [w.strip() for w in cluster_match.split(" OR ") if w.strip()]
-        if cluster_name not in cluster_words:
-            cluster_words.append(cluster_name)
-            
-        parts = [f'"{w}"*' for w in cluster_words]
-        fts_query = " OR ".join(parts)
+        fts_query = build_cluster_fts_query(cluster_name, MACRO_CLUSTERS_CACHE[cluster_name], True)
     else:
         words = safe_q.split()
         expanded_parts = []
@@ -603,15 +636,33 @@ def simulate_home_feed(req: SimulateRequest):
     if exploration_cluster:
         selected_clusters.append(exploration_cluster)
         
+    # --- CROSS-SELLING (Venta Cruzada) ---
+    cross_sell_clusters = []
+    for c_sel in selected_clusters:
+        if c_sel in MACRO_CLUSTERS_CACHE:
+            related_str = MACRO_CLUSTERS_CACHE[c_sel].get("relatedClusters", "")
+            if related_str:
+                related_list = [r.strip().lower() for r in related_str.split(",") if r.strip()]
+                for r in related_list:
+                    if r in MACRO_CLUSTERS_CACHE and r not in selected_clusters and r not in cross_sell_clusters:
+                        cross_sell_clusters.append(r)
+    
+    # Añadir máximo 2 de venta cruzada
+    for r in cross_sell_clusters[:2]:
+        selected_clusters.append(r)
+        
     if not selected_clusters:
         selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
         
     # 4. Construir Secciones Dinámicas
     for cluster in selected_clusters:
         if cluster not in MACRO_CLUSTERS_CACHE: continue
-        keywords = MACRO_CLUSTERS_CACHE[cluster]["keywords"]
-        title = random.choice(MACRO_CLUSTERS_CACHE[cluster]["titles"])
-        subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else "Basado en tus intereses"
+        
+        fts_query = build_cluster_fts_query(cluster, MACRO_CLUSTERS_CACHE[cluster], True)
+        if not fts_query: continue
+        
+        title = random.choice(MACRO_CLUSTERS_CACHE[cluster].get("titles", ["Para ti"]))
+        subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else ("Combina perfecto" if cluster in cross_sell_clusters else "Basado en tus intereses")
         
         c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
@@ -710,6 +761,21 @@ def get_dynamic_home_feed(uid: str):
     if exploration_cluster:
         selected_clusters.append(exploration_cluster)
         
+    # --- CROSS-SELLING (Venta Cruzada) ---
+    cross_sell_clusters = []
+    for c_sel in selected_clusters:
+        if c_sel in MACRO_CLUSTERS_CACHE:
+            related_str = MACRO_CLUSTERS_CACHE[c_sel].get("relatedClusters", "")
+            if related_str:
+                related_list = [r.strip().lower() for r in related_str.split(",") if r.strip()]
+                for r in related_list:
+                    if r in MACRO_CLUSTERS_CACHE and r not in selected_clusters and r not in cross_sell_clusters:
+                        cross_sell_clusters.append(r)
+    
+    # Añadir máximo 2 de venta cruzada
+    for r in cross_sell_clusters[:2]:
+        selected_clusters.append(r)
+        
     # Fallback si no hay clusters seleccionados (ej: cuenta nueva y hora neutra)
     if not selected_clusters:
         selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
@@ -717,9 +783,12 @@ def get_dynamic_home_feed(uid: str):
     # 4. Construir Secciones Dinámicas con FTS5 MATCH
     for cluster in selected_clusters:
         if cluster not in MACRO_CLUSTERS_CACHE: continue
-        keywords = MACRO_CLUSTERS_CACHE[cluster]["keywords"]
-        title = random.choice(MACRO_CLUSTERS_CACHE[cluster]["titles"])
-        subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else "Basado en tus intereses"
+        
+        fts_query = build_cluster_fts_query(cluster, MACRO_CLUSTERS_CACHE[cluster], True)
+        if not fts_query: continue
+        
+        title = random.choice(MACRO_CLUSTERS_CACHE[cluster].get("titles", ["Para ti"]))
+        subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else ("Combina perfecto" if cluster in cross_sell_clusters else "Basado en tus intereses")
         
         c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
