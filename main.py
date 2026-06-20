@@ -678,7 +678,7 @@ def simulate_home_feed(req: SimulateRequest):
                 (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
                 ABS(RANDOM() % 20) DESC
             LIMIT 5
-        """, (keywords,))
+        """, (fts_query,))
         items = c.fetchall()
         if items:
             feed_sections.append({
@@ -804,7 +804,7 @@ def get_dynamic_home_feed(uid: str):
                 (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
                 ABS(RANDOM() % 20) DESC
             LIMIT 5
-        """, (keywords,))
+        """, (fts_query,))
         items = c.fetchall()
         if items:
             feed_sections.append({
