@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import firebase_admin
 from firebase_admin import credentials, firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel
 from typing import List, Optional
 
@@ -636,10 +637,10 @@ def delta_sync_loop():
                     print(f"Error en full sync inicial: {ex}")
             else:
                 last_sync_dt = datetime.fromisoformat(last_sync_str)
-                stores_ref = db.collection("stores").where("updatedAt", ">", last_sync_dt)
+                stores_ref = db.collection("stores").where(filter=FieldFilter("updatedAt", ">", last_sync_dt))
                 changed_stores = list(stores_ref.stream())
                 
-                products_ref = db.collection_group("products").where("updatedAt", ">", last_sync_dt)
+                products_ref = db.collection_group("products").where(filter=FieldFilter("updatedAt", ">", last_sync_dt))
                 changed_products = list(products_ref.stream())
                 
                 if changed_stores or changed_products:
