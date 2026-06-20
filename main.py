@@ -100,7 +100,7 @@ def on_algorithm_config_snapshot(doc_snapshot, changes, read_time):
                 MACRO_CLUSTERS_CACHE = data["clusters"]
             if "time_rules" in data:
                 TIME_RULES_CACHE = data["time_rules"]
-            print(f"🔥 Cerebro V2 RAM Actualizado. Clústeres: {len(MACRO_CLUSTERS_CACHE)} | Reglas: {len(TIME_RULES_CACHE)}")
+            print(f"🔥 Cerebro V3.2 RAM Actualizado. Clústeres: {len(MACRO_CLUSTERS_CACHE)} | Reglas: {len(TIME_RULES_CACHE)}")
 
 if db:
     doc_ref = db.collection('config').document('algorithm')
@@ -414,7 +414,7 @@ def build_cluster_fts_query(cluster_name, c_val, include_cluster_name=True):
         cats = [c.strip() for c in store_cats_str.split(",") if c.strip()]
         if cats:
             cat_group = " OR ".join([f'"{c}"*' for c in cats])
-            cat_parts.append(f"{{category}} : ({cat_group})")
+            cat_parts.append(f"category : ({cat_group})")
             
     fts_query_parts = []
     if cat_parts:
