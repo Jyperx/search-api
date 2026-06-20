@@ -222,7 +222,7 @@ def sync_database():
             s_id, 'store', s_id, 
             s_data.get('name', ''), 
             s_data.get('category', ''), 
-            '', '', '', s_data.get('imageUrl', '')
+            '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', ''))
         ))
         count += 1
         
@@ -280,7 +280,7 @@ def sync_store(store_id: str):
             store_id, 'store', store_id, 
             s_data.get('name', ''), 
             s_data.get('category', ''), 
-            '', '', '', s_data.get('imageUrl', '')
+            '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', ''))
         ))
         count += 1
         
@@ -570,7 +570,7 @@ def on_stores_snapshot(col_snapshot, changes, read_time):
                         s_id, 'store', s_id, 
                         s_data.get('name', ''), 
                         s_data.get('category', ''), 
-                        '', '', '', s_data.get('imageUrl', '')
+                        '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', ''))
                     ))
                 elif change.type.name == 'REMOVED':
                     c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
