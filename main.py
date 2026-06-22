@@ -1020,6 +1020,19 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             anchors = [dict(row) for row in c.fetchall()]
         except Exception as e:
             print(f"[Cruce 1] Error en KNN Anclas: {e}")
+    else:
+        try:
+            # Para usuarios nuevos sin actividades, elegimos 2 anclas semánticas al azar para que exploren
+            c.execute("""
+                SELECT a.anchor_id, m.title, m.subtitle
+                FROM anchor_vectors a
+                JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
+                ORDER BY RANDOM()
+                LIMIT 2
+            """)
+            anchors = [dict(row) for row in c.fetchall()]
+        except Exception as e:
+            print(f"[Cruce 1 Random] Error: {e}")
             
     # 3. Cruce 2: Buscar Productos para el Ancla Ganadora (con Fallback de Anclas)
     vectorial_section = None
@@ -1027,9 +1040,6 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
     for anchor in anchors:
         try:
             # JOIN Hard-Filter: En lugar de iterar IDs en python, hacemos JOIN en SQL.
-            # NOTA: En la estructura actual de search_index no existen las columnas 'stock' o 'is_open',
-            # así que usamos CAST(s.price AS INTEGER) > 0 como proxy de disponibilidad temporal.
-            # Para usar stock e is_open habría que actualizar la tabla virtual FTS5.
             c.execute("""
                 SELECT p.product_id, vec_distance_cosine(p.embedding, a.embedding) AS distance,
                        s.id, s.type, s.storeId, s.name, s.category, s.description,
@@ -1052,7 +1062,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 rid = row["id"]
                 sid = row["storeId"]
                 if rid in global_seen_ids: continue
-                if store_counts.get(sid, 0) >= 2: continue # Máximo 2 por tienda
+                if store_counts.get(sid, 0) >= 4: continue # Máximo 4 por tienda
                 
                 filtered_items.append(dict(row))
                 global_seen_ids.add(rid)
@@ -1061,8 +1071,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 if len(filtered_items) >= 5:
                     break
                     
-            # Fallback de Anclas: Si no consigue al menos 3 productos, descartamos y probamos la siguiente ancla.
-            if len(filtered_items) >= 3:
+            # Fallback de Anclas: Si no consigue al menos 2 productos, descartamos y probamos la siguiente ancla.
+            if len(filtered_items) >= 2:
                 vectorial_section = {
                     "id": f"dyn_vector_{anchor['anchor_id']}",
                     "type": "products",
@@ -1141,13 +1151,13 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 rid = row["id"]
                 sid = row["storeId"]
                 if rid in global_seen_ids: continue
-                if store_counts.get(sid, 0) >= 2: continue
+                if store_counts.get(sid, 0) >= 4: continue # Aumentado a 4 para DB pequeñas
                 filtered_items.append(dict(row))
                 global_seen_ids.add(rid)
                 store_counts[sid] = store_counts.get(sid, 0) + 1
                 if len(filtered_items) >= 5: break
                     
-            if len(filtered_items) >= 3:
+            if len(filtered_items) >= 2: # Reducido a 2 para DB pequeñas
                 feed_sections.append({
                     "id": f"dyn_fts_{cluster}",
                     "type": "products",
