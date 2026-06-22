@@ -830,6 +830,9 @@ def get_promotions():
     conn.close()
     return {"results": [dict(row) for row in rows]}
 
+class HomeFeedRequest(BaseModel):
+    activities: List[dict] = []
+
 class SimulateRequest(BaseModel):
     prompt: str
 
