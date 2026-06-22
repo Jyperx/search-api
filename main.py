@@ -1285,24 +1285,28 @@ def get_admin_cerebro():
         c.execute("SELECT COUNT(*) as c FROM product_vectors")
         total_product_vectors = c.fetchone()["c"]
         
-        # 2. Las Anclas de IA actuales
         c.execute("""
-            SELECT a.anchor_id, m.title, m.subtitle, m.section_type
+            SELECT a.anchor_id, m.title, m.subtitle, m.section_type, a.embedding
             FROM anchor_vectors a
             LEFT JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
         """)
         
-        # Obtenemos los keywords desde la caché usando el section_type como clave (el nombre del clúster)
         anchors = []
         for row in c.fetchall():
             anchor_dict = dict(row)
             cluster_name = anchor_dict.get("section_type")
             
-            # Buscamos en MACRO_CLUSTERS_CACHE
             if cluster_name and cluster_name in MACRO_CLUSTERS_CACHE:
                 anchor_dict["keywords"] = MACRO_CLUSTERS_CACHE[cluster_name].get("keywords", "Generado por IA")
             else:
                 anchor_dict["keywords"] = "Generado por IA"
+                
+            # Extraer vector para que el admin lo vea
+            if anchor_dict.get("embedding"):
+                import numpy as np
+                vec_array = np.frombuffer(anchor_dict["embedding"], dtype=np.float32)
+                anchor_dict["vector_preview"] = f"[{vec_array[0]:.3f}, {vec_array[1]:.3f}, {vec_array[2]:.3f}...]"
+                del anchor_dict["embedding"] # remove binary
                 
             anchors.append(anchor_dict)
         
