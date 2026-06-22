@@ -414,6 +414,7 @@ def do_seed_anchors():
                     res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
                     break
                 except Exception as e:
+                    print(f"Error in embed_content (attempt {attempt}):", e)
                     time.sleep(2 ** attempt)
             
             if res and 'embedding' in res:
