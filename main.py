@@ -308,7 +308,7 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func):
         if row['embedding']:
             vectors_map[row['product_id']] = np.frombuffer(row['embedding'], dtype=np.float32)
             
-    user_vector = np.zeros(3072, dtype=np.float32)
+    user_vector = np.zeros(768, dtype=np.float32)
     total_weight = 0.0
     
     for p_id in product_ids:
