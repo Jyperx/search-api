@@ -427,15 +427,16 @@ def seed_anchors():
 @app.post("/api/sync")
 def sync_database():
     """Descarga todos los comercios y productos de Firestore y reconstruye el índice SQLite."""
-    if not db:
-        raise HTTPException(status_code=500, detail="Firebase no está inicializado. Falta serviceAccountKey.json o FIREBASE_SERVICE_ACCOUNT.")
-    
-    conn = sqlite3.connect(SQLITE_DB)
-    c = conn.cursor()
-    
-    # Vaciar el índice actual
-    c.execute("DELETE FROM search_index")
-    c.execute("DELETE FROM promotions")
+    try:
+        if not db:
+            raise HTTPException(status_code=500, detail="Firebase no está inicializado.")
+        
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        # Vaciar el índice actual
+        c.execute("DELETE FROM search_index")
+        c.execute("DELETE FROM promotions")
     
     # 1. Leer Promociones desde marketing_campaigns
     import time
@@ -525,11 +526,16 @@ def sync_database():
                         1 if p_data.get('available', True) else 0
                     ))
             count += 1
+            if p_data.get('available', True):
+                vector_worker_pool.submit(async_index_product_vector, product.id, p_data)
 
-    conn.commit()
-    conn.close()
-    
-    return {"message": "Sincronización exitosa", "items_indexed": count}
+        conn.commit()
+        conn.close()
+        
+        return {"message": "Sincronización exitosa", "items_indexed": count}
+    except Exception as e:
+        print("Sync Error:", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/sync/store/{store_id}")
 def sync_store(store_id: str):
