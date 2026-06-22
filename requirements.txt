@@ -5,3 +5,4 @@ pydantic
 apscheduler
 sqlite-vec
 google-generativeai
+numpy
