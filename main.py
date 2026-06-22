@@ -148,7 +148,7 @@ def on_algorithm_config_snapshot(doc_snapshot, changes, read_time):
                 MACRO_CLUSTERS_CACHE = data["clusters"]
             if "time_rules" in data:
                 TIME_RULES_CACHE = data["time_rules"]
-            print(f"🔥 Cerebro V3.2 RAM Actualizado. Clústeres: {len(MACRO_CLUSTERS_CACHE)} | Reglas: {len(TIME_RULES_CACHE)}")
+            print(f"🔥 Cerebro Híbrido V4.0 RAM Actualizado. Clústeres: {len(MACRO_CLUSTERS_CACHE)} | Reglas: {len(TIME_RULES_CACHE)}")
 
 if db:
     doc_ref = db.collection('config').document('algorithm')
