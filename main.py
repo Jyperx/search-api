@@ -193,7 +193,7 @@ def init_db():
     # FTS5 crea una tabla virtual súper rápida para texto
     # type: 'store' o 'product'
     try:
-        c.execute("SELECT likes FROM search_index LIMIT 1")
+        c.execute("SELECT available FROM search_index LIMIT 1")
     except sqlite3.OperationalError:
         c.execute("DROP TABLE IF EXISTS search_index")
         
