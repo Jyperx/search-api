@@ -1,7 +1,9 @@
 import os
 import sqlite3
 import sqlite_vec
-from google import genai
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
+import google.generativeai as genai
 import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 import json
@@ -167,7 +169,7 @@ if VOLUME_PATH:
 else:
     SQLITE_DB = 'search_index.db'
 
-genai_client = genai.Client(api_key=os.getenv("VITE_GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")))
+genai.configure(api_key=os.getenv("VITE_GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")))
 EMBEDDING_MODEL = "models/gemini-embedding-001"
 vector_worker_pool = ThreadPoolExecutor(max_workers=3)
 
@@ -258,8 +260,8 @@ def generate_product_embedding(name, category, description):
     import time
     for attempt in range(3):
         try:
-            res = genai_client.models.embed_content(model=EMBEDDING_MODEL, contents=text, config={"task_type": "RETRIEVAL_DOCUMENT"})
-            return sqlite_vec.serialize_float32(res.embeddings[0].values)
+            res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+            return sqlite_vec.serialize_float32(res['embedding'])
         except Exception as e:
             time.sleep(2 ** attempt)
     return None
