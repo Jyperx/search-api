@@ -1,5 +1,9 @@
 import os
 import sqlite3
+import sqlite_vec
+import google.generativeai as genai
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 import json
 import difflib
 import random
@@ -163,8 +167,21 @@ if VOLUME_PATH:
 else:
     SQLITE_DB = 'search_index.db'
 
+genai.configure(api_key=os.getenv("VITE_GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")))
+EMBEDDING_MODEL = "models/gemini-embedding-001"
+vector_worker_pool = ThreadPoolExecutor(max_workers=3)
+
+def get_db_connection():
+    conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+    conn.row_factory = sqlite3.Row
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    return conn
+
+
 def init_db():
-    conn = sqlite3.connect(SQLITE_DB)
+    conn = get_db_connection()
     # Habilitar modo WAL (Write-Ahead Logging) para alta concurrencia
     conn.execute('PRAGMA journal_mode=WAL;')
     # Optimizar el rendimiento de escritura
@@ -180,7 +197,7 @@ def init_db():
         
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-            id, type, storeId, name, category, description, price, icon, imageUrl UNINDEXED, onSale UNINDEXED, salePrice UNINDEXED, likes UNINDEXED, views UNINDEXED, purchases UNINDEXED
+            id, type, storeId, name, category, description, price, icon, imageUrl UNINDEXED, onSale UNINDEXED, salePrice UNINDEXED, likes UNINDEXED, views UNINDEXED, purchases UNINDEXED, available UNINDEXED, isOpen UNINDEXED
         )
     ''')
     
@@ -191,6 +208,30 @@ def init_db():
         )
     ''')
     
+    
+    c.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS product_vectors USING vec0(
+            product_id TEXT PRIMARY KEY,
+            embedding float[3072]
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS anchor_metadata (
+            anchor_id TEXT PRIMARY KEY,
+            title TEXT,
+            subtitle TEXT,
+            section_type TEXT
+        )
+    ''')
+    
+    c.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS anchor_vectors USING vec0(
+            anchor_id TEXT PRIMARY KEY,
+            embedding float[3072]
+        )
+    ''')
+
     c.execute("DROP TABLE IF EXISTS promotions")
     c.execute('''
         CREATE TABLE IF NOT EXISTS promotions (
@@ -211,6 +252,74 @@ def init_db():
     conn.close()
 
 init_db()
+
+def generate_product_embedding(name, category, description):
+    text = f"{name}. Categoría: {category}. {description}"
+    import time
+    for attempt in range(3):
+        try:
+            res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+            return sqlite_vec.serialize_float32(res['embedding'])
+        except Exception as e:
+            time.sleep(2 ** attempt)
+    return None
+
+def async_index_product_vector(p_id, name, category, description):
+    vector_bytes = generate_product_embedding(name, category, description)
+    if vector_bytes:
+        try:
+            from main import sqlite_lock
+            with sqlite_lock:
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("INSERT OR REPLACE INTO product_vectors (product_id, embedding) VALUES (?, ?)", (p_id, vector_bytes))
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            print(f"Error guardando vector: {e}")
+
+def calculate_user_vector(activity_docs, calculate_time_decay_func):
+    product_ids = []
+    decay_weights = {}
+    
+    for doc in activity_docs:
+        data = doc.to_dict() if hasattr(doc, 'to_dict') else doc
+        p_id = data.get('productId')
+        if p_id:
+            weight = calculate_time_decay_func(data.get('timestamp'))
+            if p_id not in decay_weights:
+                product_ids.append(p_id)
+            decay_weights[p_id] = decay_weights.get(p_id, 0.0) + weight
+            
+    if not product_ids:
+        return None
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    placeholders = ','.join(['?'] * len(product_ids))
+    c.execute(f"SELECT product_id, embedding FROM product_vectors WHERE product_id IN ({placeholders})", tuple(product_ids))
+    rows = c.fetchall()
+    conn.close()
+    
+    vectors_map = {}
+    for row in rows:
+        if row['embedding']:
+            vectors_map[row['product_id']] = np.frombuffer(row['embedding'], dtype=np.float32)
+            
+    user_vector = np.zeros(3072, dtype=np.float32)
+    total_weight = 0.0
+    
+    for p_id in product_ids:
+        if p_id in vectors_map:
+            vec = vectors_map[p_id]
+            w = decay_weights[p_id]
+            user_vector += (vec * w)
+            total_weight += w
+            
+    if total_weight > 0:
+        user_vector = user_vector / total_weight
+        return sqlite_vec.serialize_float32(user_vector.tolist())
+    return None
 
 # ==========================================
 # MOTOR INTELIGENTE DE BÚSQUEDA
@@ -337,14 +446,15 @@ def sync_database():
         
         # Insertar el comercio en el índice
         c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0)
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
         """, (
             s_id, 'store', s_id, 
             s_data.get('name', ''), 
             s_data.get('category', ''), 
-            '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', ''))
-        ))
+            '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', '')),
+                        1 if s_data.get('isOpen', True) else 0
+                    ))
         count += 1
         
         # Leer los productos de este comercio (Sub-colección)
@@ -352,8 +462,8 @@ def sync_database():
         for product in products_ref.stream():
             p_data = product.to_dict()
             c.execute("""
-                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """, (
                 product.id, 'product', s_id, 
                 p_data.get('name', ''), 
@@ -366,8 +476,9 @@ def sync_database():
                 p_data.get('salePrice', None),
                 p_data.get('likes', 0),
                 p_data.get('views', 0),
-                p_data.get('purchases', 0)
-            ))
+                p_data.get('purchases', 0),
+                        1 if p_data.get('available', True) else 0
+                    ))
             count += 1
 
     conn.commit()
@@ -395,14 +506,15 @@ def sync_store(store_id: str):
     if store_doc.exists:
         s_data = store_doc.to_dict()
         c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0)
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
         """, (
             store_id, 'store', store_id, 
             s_data.get('name', ''), 
             s_data.get('category', ''), 
-            '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', ''))
-        ))
+            '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', '')),
+                        1 if s_data.get('isOpen', True) else 0
+                    ))
         count += 1
         
         # 3. Leer Productos
@@ -410,8 +522,8 @@ def sync_store(store_id: str):
         for product in products_ref.stream():
             p_data = product.to_dict()
             c.execute("""
-                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """, (
                 product.id, 'product', store_id, 
                 p_data.get('name', ''), 
@@ -424,8 +536,9 @@ def sync_store(store_id: str):
                 p_data.get('salePrice', None),
                 p_data.get('likes', 0),
                 p_data.get('views', 0),
-                p_data.get('purchases', 0)
-            ))
+                p_data.get('purchases', 0),
+                        1 if p_data.get('available', True) else 0
+                    ))
             count += 1
 
     conn.commit()
@@ -625,6 +738,9 @@ class SimulateActivity(BaseModel):
     days_ago: int
     is_search: bool = False
 
+class HomeFeedRequest(BaseModel):
+    activities: List[dict] = []
+
 class SimulateRequest(BaseModel):
     current_hour: int
     activities: List[SimulateActivity]
@@ -754,106 +870,162 @@ def simulate_home_feed(req: SimulateRequest):
     conn.close()
     return {"sections": feed_sections}
 
-@app.get("/api/home/{uid}")
-def get_dynamic_home_feed(uid: str):
-    """Devuelve el inicio completo (Home Feed) basado en el Algoritmo V2.0 (Time-Decay, Context, FTS5)."""
+@app.post("/api/home/{uid}")
+def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
+    """Devuelve el inicio completo (Home Feed) basado en el Motor Híbrido (KNN Vectorial + FTS5)."""
     feed_sections = []
     
-    conn = sqlite3.connect(SQLITE_DB)
-    conn.row_factory = sqlite3.Row
+    conn = get_db_connection()
     c = conn.cursor()
         
-    # 1. Leer Intenciones (Actividad) y aplicar Time-Decay
-    cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
-    now = datetime.now(timezone.utc)
-    current_hour = (now.hour - 5) % 24  # UTC-5 (Colombia)
+    user_vector = None
+    activities = req.activities
     
-    if db:
+    if activities:
         try:
-            # Leer ultimos 100 eventos de actividad del usuario
-            activities = db.collection('users').document(uid).collection('activity').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(100).stream()
-            for act in activities:
-                data = act.to_dict()
-                cat = (data.get('category') or '').lower()
-                ts = data.get('timestamp')
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            def calc_decay(ts):
+                if not ts: return 1.0
+                try:
+                    # Parse timestamp formats from JSON payload
+                    if hasattr(ts, 'timestamp'): pass # already datetime
+                    elif isinstance(ts, str):
+                        try:
+                            ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                        except:
+                            try:
+                                ts = datetime.fromtimestamp(float(ts)/1000, tz=timezone.utc)
+                            except: return 1.0
+                    elif isinstance(ts, (int, float)):
+                        ts = datetime.fromtimestamp(ts/1000, tz=timezone.utc)
+                    else:
+                        return 1.0
+                        
+                    days_ago = (now - ts).days
+                    if days_ago == 0: return 3.0
+                    elif days_ago > 7: return 0.2
+                    elif days_ago > 30: return 0.0
+                    return 1.0
+                except: return 1.0
                 
-                # Time-Decay Weighting
-                multiplier = 1.0
-                if ts:
-                    try:
-                        days_ago = (now - ts).days
-                        if days_ago == 0: multiplier = 3.0
-                        elif days_ago > 7: multiplier = 0.2
-                        elif days_ago > 30: multiplier = 0.0
-                    except:
-                        pass
-                
-                score = (2.0 if data.get('type') == 'search' else 1.0) * multiplier
-                
-                # Match activity category to our MACRO_CLUSTERS
-                for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
-                    if cat in c_val['keywords'].lower() or cat == c_key:
-                        cluster_scores[c_key] += score
+            user_vector = calculate_user_vector(activities, calc_decay)
         except Exception as e:
-            print("Error leyendo actividad:", e)
+            print("Error generando vector de usuario desde local:", e)
             
-    # 2. Conciencia Temporal (Context-Awareness) via TIME_RULES_CACHE
+    global_seen_ids = set()
+    
+    # 2. Cruce 1: Encontrar el Ancla ganadora (Contexto)
+    anchors = []
+    if user_vector:
+        try:
+            c.execute("""
+                SELECT a.anchor_id, m.title, m.subtitle, vec_distance_cosine(a.embedding, ?) AS distance
+                FROM anchor_vectors a
+                JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
+                ORDER BY distance ASC
+                LIMIT 2
+            """, (user_vector,))
+            anchors = [dict(row) for row in c.fetchall()]
+        except Exception as e:
+            print(f"[Cruce 1] Error en KNN Anclas: {e}")
+            
+    # 3. Cruce 2: Buscar Productos para el Ancla Ganadora (con Fallback de Anclas)
+    vectorial_section = None
+    
+    for anchor in anchors:
+        try:
+            # JOIN Hard-Filter: En lugar de iterar IDs en python, hacemos JOIN en SQL.
+            # NOTA: En la estructura actual de search_index no existen las columnas 'stock' o 'is_open',
+            # así que usamos CAST(s.price AS INTEGER) > 0 como proxy de disponibilidad temporal.
+            # Para usar stock e is_open habría que actualizar la tabla virtual FTS5.
+            c.execute("""
+                SELECT p.product_id, vec_distance_cosine(p.embedding, a.embedding) AS distance,
+                       s.id, s.type, s.storeId, s.name, s.category, s.description,
+                       s.price, s.icon, s.imageUrl, s.onSale, s.salePrice, s.likes, s.views, s.purchases,
+                       st.name as storeName
+                FROM product_vectors p
+                JOIN anchor_vectors a ON a.anchor_id = ?
+                JOIN search_index s ON p.product_id = s.id AND s.type = 'product'
+                LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') st ON st.id = s.storeId
+                WHERE CAST(s.available AS INTEGER) = 1 AND CAST(st.isOpen AS INTEGER) = 1
+                ORDER BY distance ASC
+                LIMIT 15
+            """, (anchor["anchor_id"],))
+            
+            raw_items = c.fetchall()
+            store_counts = {}
+            filtered_items = []
+            
+            for row in raw_items:
+                rid = row["id"]
+                sid = row["storeId"]
+                if rid in global_seen_ids: continue
+                if store_counts.get(sid, 0) >= 2: continue # Máximo 2 por tienda
+                
+                filtered_items.append(dict(row))
+                global_seen_ids.add(rid)
+                store_counts[sid] = store_counts.get(sid, 0) + 1
+                
+                if len(filtered_items) >= 5:
+                    break
+                    
+            # Fallback de Anclas: Si no consigue al menos 3 productos, descartamos y probamos la siguiente ancla.
+            if len(filtered_items) >= 3:
+                vectorial_section = {
+                    "id": f"dyn_vector_{anchor['anchor_id']}",
+                    "type": "products",
+                    "title": anchor["title"],
+                    "subtitle": anchor["subtitle"],
+                    "items": filtered_items
+                }
+                break # Encontramos una sección válida, salimos del bucle.
+        except Exception as e:
+            print(f"[Cruce 2] Error obteniendo productos para ancla {anchor['anchor_id']}: {e}")
+
+    if vectorial_section:
+        feed_sections.append(vectorial_section)
+        
+    # 4. Fallback Léxico (FTS5) - MACRO_CLUSTERS_CACHE
+    cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
+    from datetime import datetime, timezone
+    current_hour = (datetime.now(timezone.utc).hour - 5) % 24
+    
+    for act in activities:
+        data = act.to_dict() if hasattr(act, 'to_dict') else act
+        cat = (data.get('category') or '').lower()
+        score = 2.0 if data.get('type') == 'search' else 1.0
+        for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
+            if cat in c_val['keywords'].lower() or cat == c_key:
+                cluster_scores[c_key] += score
+                
     for rule in TIME_RULES_CACHE:
-        sh = int(rule.get("startHour", 0))
-        eh = int(rule.get("endHour", 23))
-        rule_cluster = rule.get("cluster", "")
-        boost = float(rule.get("scoreBoost", 0))
-        
+        sh, eh = int(rule.get("startHour", 0)), int(rule.get("endHour", 23))
+        rule_cluster, boost = rule.get("cluster", ""), float(rule.get("scoreBoost", 0))
         if rule_cluster in cluster_scores:
-            if sh <= eh:
-                if sh <= current_hour <= eh:
-                    cluster_scores[rule_cluster] += boost
-            else:
-                if current_hour >= sh or current_hour <= eh:
-                    cluster_scores[rule_cluster] += boost
-        
-    # 3. Selección 80/20 (Explotación vs Exploración)
+            if sh <= eh and sh <= current_hour <= eh:
+                cluster_scores[rule_cluster] += boost
+            elif sh > eh and (current_hour >= sh or current_hour <= eh):
+                cluster_scores[rule_cluster] += boost
+                
     sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
     top_clusters = sorted_clusters[:2]
     
+    import random
+    selected_clusters = top_clusters.copy()
     unvisited = [k for k in MACRO_CLUSTERS_CACHE.keys() if k not in top_clusters]
     exploration_cluster = random.choice(unvisited) if unvisited else None
-    
-    selected_clusters = top_clusters.copy()
-    if exploration_cluster:
-        selected_clusters.append(exploration_cluster)
+    if exploration_cluster: selected_clusters.append(exploration_cluster)
         
-    # --- CROSS-SELLING (Venta Cruzada) ---
-    cross_sell_clusters = []
-    for c_sel in selected_clusters:
-        if c_sel in MACRO_CLUSTERS_CACHE:
-            related_str = MACRO_CLUSTERS_CACHE[c_sel].get("relatedClusters", "")
-            if related_str:
-                related_list = [r.strip().lower() for r in related_str.split(",") if r.strip()]
-                for r in related_list:
-                    if r in MACRO_CLUSTERS_CACHE and r not in selected_clusters and r not in cross_sell_clusters:
-                        cross_sell_clusters.append(r)
-    
-    # Añadir máximo 2 de venta cruzada
-    for r in cross_sell_clusters[:2]:
-        selected_clusters.append(r)
-        
-    # Fallback si no hay clusters seleccionados (ej: cuenta nueva y hora neutra)
     if not selected_clusters:
         selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
         
-    # 4. Construir Secciones Dinámicas con FTS5 MATCH
-    # Set global para evitar duplicados entre secciones
-    global_seen_ids = set()
-    
     for cluster in selected_clusters:
-        if cluster not in MACRO_CLUSTERS_CACHE: continue
-        
         fts_query = build_cluster_fts_query(cluster, MACRO_CLUSTERS_CACHE[cluster], True)
         if not fts_query: continue
         
         title = random.choice(MACRO_CLUSTERS_CACHE[cluster].get("titles", ["Para ti"]))
-        subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else ("Combina perfecto" if cluster in cross_sell_clusters else "Basado en tus intereses")
+        subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else "Basado en tus intereses"
         
         try:
             c.execute("""
@@ -865,130 +1037,36 @@ def get_dynamic_home_feed(uid: str):
                 WHERE p.type = 'product' AND search_index MATCH ?
                 ORDER BY 
                     (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
-                    (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
                     (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
-                    (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
                     ABS(RANDOM() % 20) DESC
                 LIMIT 20
             """, (fts_query,))
-            raw_items = c.fetchall()
             
-            # Bug #5: Deduplicación entre secciones + Bug #6: diversidad (máx 2 por tienda)
+            raw_items = c.fetchall()
             store_counts = {}
             filtered_items = []
+            
             for row in raw_items:
                 rid = row["id"]
                 sid = row["storeId"]
-                if rid in global_seen_ids:
-                    continue  # Ya apareció en una sección anterior
-                if store_counts.get(sid, 0) >= 2:
-                    continue  # Esta tienda ya tiene 2 productos en esta sección
+                if rid in global_seen_ids: continue
+                if store_counts.get(sid, 0) >= 2: continue
                 filtered_items.append(dict(row))
                 global_seen_ids.add(rid)
                 store_counts[sid] = store_counts.get(sid, 0) + 1
-                if len(filtered_items) >= 5:
-                    break
+                if len(filtered_items) >= 5: break
                     
-            if filtered_items:
+            if len(filtered_items) >= 3:
                 feed_sections.append({
-                    "id": f"dyn_{cluster}",
+                    "id": f"dyn_fts_{cluster}",
                     "type": "products",
                     "title": title,
                     "subtitle": subtitle,
                     "items": filtered_items
                 })
         except Exception as e:
-            print(f"[Home Feed] Error en cluster {cluster}: {e}")
-            continue
+            print(f"[FTS Fallback] Error en cluster {cluster}: {e}")
 
-    # 5. Los más Baratos DE LOS INTERESES del usuario (no globales)
-    # Construimos un query que combine los top clusters del usuario
-    cheap_fts_parts = []
-    for cluster in (top_clusters[:2] if top_clusters else list(MACRO_CLUSTERS_CACHE.keys())[:2]):
-        if cluster in MACRO_CLUSTERS_CACHE:
-            kws = MACRO_CLUSTERS_CACHE[cluster].get("keywords", "")
-            words = [w.strip() for w in kws.split(" OR ") if w.strip()]
-            cheap_fts_parts.extend([f'"{w}"*' for w in words[:5]])
-    
-    cheap_fts_q = " OR ".join(cheap_fts_parts) if cheap_fts_parts else None
-    
-    try:
-        if cheap_fts_q:
-            c.execute("""
-                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                       s.name as storeName
-                FROM search_index p
-                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-                WHERE p.type = 'product' AND CAST(p.price AS INTEGER) > 0 AND search_index MATCH ?
-                ORDER BY CAST(p.price AS INTEGER) ASC
-                LIMIT 20
-            """, (cheap_fts_q,))
-        else:
-            c.execute("""
-                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                       s.name as storeName
-                FROM search_index p
-                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-                WHERE p.type = 'product' AND CAST(p.price AS INTEGER) > 0
-                ORDER BY CAST(p.price AS INTEGER) ASC
-                LIMIT 20
-            """)
-    except:
-        c.execute("""
-            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                   s.name as storeName
-            FROM search_index p
-            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-            WHERE p.type = 'product' AND CAST(p.price AS INTEGER) > 0
-            ORDER BY CAST(p.price AS INTEGER) ASC
-            LIMIT 20
-        """)
-    cheap_raw = c.fetchall()
-    cheap_items = [dict(r) for r in cheap_raw if r["id"] not in global_seen_ids][:5]
-    for r in cheap_items:
-        global_seen_ids.add(r["id"])
-    if cheap_items:
-        feed_sections.append({
-            "id": "cheap_deals",
-            "type": "products",
-            "title": "¡Ahorra dinero!",
-            "subtitle": "Los más baratos basado en tus gustos",
-            "items": cheap_items
-        })
-
-    # 6. Comercios Destacados
-    c.execute("""
-        SELECT id, type, storeId, name, category, description, price, icon, imageUrl as logoUrl
-        FROM search_index
-        WHERE type = 'store'
-        ORDER BY 
-            (COALESCE(CAST(likes AS REAL), 0) * 10.0) +
-            (CASE WHEN COALESCE(CAST(views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
-            ABS(RANDOM() % 20) DESC
-        LIMIT 15
-    """)
-    stores = c.fetchall()
-    if stores:
-        store_list = []
-        for s in stores:
-            s_dict = dict(s)
-            s_dict['open'] = True
-            s_dict['time'] = '15-30 min'
-            s_dict['rating'] = 4.5
-            s_dict['deliveryFee'] = 0
-            store_list.append(s_dict)
-            
-        feed_sections.append({
-            "id": "stores",
-            "type": "stores",
-            "title": "Cerca de ti",
-            "subtitle": "Lugares recomendados en tu zona",
-            "items": store_list
-        })
-        
     conn.close()
     return {"sections": feed_sections}
 
@@ -1116,17 +1194,20 @@ class ProductPayload(BaseModel):
     price: Optional[float] = 0
     icon: Optional[str] = ""
     imageUrl: Optional[str] = ""
+    isOpen: Optional[bool] = True
     onSale: Optional[bool] = False
     salePrice: Optional[float] = None
     likes: Optional[int] = 0
     views: Optional[int] = 0
     purchases: Optional[int] = 0
+    available: Optional[bool] = True
 
 class StorePayload(BaseModel):
     id: str
     name: str
     category: Optional[str] = ""
     imageUrl: Optional[str] = ""
+    isOpen: Optional[bool] = True
 
 @app.post("/api/index/product")
 def index_product(payload: ProductPayload):
@@ -1135,17 +1216,19 @@ def index_product(payload: ProductPayload):
         c = conn.cursor()
         c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (payload.id,))
         c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
         """, (
             payload.id, 'product', payload.storeId, 
             payload.name, payload.category, payload.description, 
             str(payload.price), payload.icon, payload.imageUrl,
             1 if payload.onSale else 0, payload.salePrice,
-            payload.likes, payload.views, payload.purchases
-        ))
+            payload.likes, payload.views, payload.purchases,
+                        1 if getattr(payload, 'available', True) else 0
+                    ))
         conn.commit()
         conn.close()
+    vector_worker_pool.submit(async_index_product_vector, payload.id, payload.name, payload.category, payload.description)
     return {"status": "indexed", "id": payload.id}
 
 @app.delete("/api/index/product/{product_id}")
@@ -1165,8 +1248,8 @@ def index_store(payload: StorePayload):
         c = conn.cursor()
         c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (payload.id,))
         c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0)
+            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
         """, (
             payload.id, 'store', payload.id, 
             payload.name, payload.category, '', '', '', payload.imageUrl
@@ -1187,13 +1270,14 @@ def on_stores_snapshot(col_snapshot, changes, read_time):
                     s_data = doc.to_dict() or {}
                     c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
                     c.execute("""
-                        INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0)
+                        INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
                     """, (
                         s_id, 'store', s_id, 
                         s_data.get('name', ''), 
                         s_data.get('category', ''), 
-                        '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', ''))
+                        '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', '')),
+                        1 if s_data.get('isOpen', True) else 0
                     ))
                 elif change.type.name == 'REMOVED':
                     c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
@@ -1254,14 +1338,15 @@ def delta_sync_loop():
                             s_id = store.id
                             c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
                             c.execute("""
-                                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0)
+                                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
                             """, (
                                 s_id, 'store', s_id, 
                                 s_data.get('name', ''), 
                                 s_data.get('category', ''), 
-                                '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', ''))
-                            ))
+                                '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', '')),
+                        1 if s_data.get('isOpen', True) else 0
+                    ))
                             
                         for prod in changed_products:
                             p_data = prod.to_dict()
@@ -1271,8 +1356,8 @@ def delta_sync_loop():
                             c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (p_id,))
                             if p_data.get('available', True):
                                 c.execute("""
-                                    INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                                 """, (
                                     p_id, 'product', store_id, 
                                     p_data.get('name', ''), 
@@ -1285,8 +1370,10 @@ def delta_sync_loop():
                                     p_data.get('salePrice', None),
                                     p_data.get('likes', 0),
                                     p_data.get('views', 0),
-                                    p_data.get('purchases', 0)
-                                ))
+                                    p_data.get('purchases', 0),
+                        1 if p_data.get('available', True) else 0
+                    ))
+                                vector_worker_pool.submit(async_index_product_vector, p_id, p_data.get('name', ''), p_data.get('category', ''), p_data.get('description', ''))
                         
                         current_time = datetime.now(timezone.utc).isoformat()
                         c.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", ('last_sync_time', current_time))

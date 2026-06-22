@@ -3,3 +3,5 @@ uvicorn
 firebase-admin
 pydantic
 apscheduler
+sqlite-vec
+google-generativeai

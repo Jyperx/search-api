@@ -1,0 +1,241 @@
+{
+  "users": [
+    {
+      "age": 21,
+      "activeRole": "client",
+      "avatarId": "men_2",
+      "driverData": {
+        "plate": "XXX-123",
+        "isOnline": true,
+        "vehicle": "moto"
+      },
+      "previousRole": "commerce",
+      "rating": 5,
+      "commerceStatus": "approved",
+      "ratingCount": 3,
+      "isDriver": true,
+      "name": "Lumer Collazos",
+      "expoPushToken": "ExponentPushToken[YwNc86HEM0XaC9iCJuw-I2]",
+      "isCommerce": true,
+      "docType": "CC",
+      "walletBalance": 92000.0,
+      "isClient": true,
+      "phone": "+57 3105693332",
+      "docNum": "1118362740",
+      "commerceKycDocs": [
+        "https://firebasestorage.googleapis.com/v0/b/punto-21481.firebasestorage.app/o/kyc%2F2LbBodbzkNbyTpAHeBSeLj3XSPo2%2Fcommerce_doc.jpg?alt=media&token=32439f37-62ea-4bea-a162-d8dc4855f68d"
+      ],
+      "driverStatus": "approved",
+      "ratingSum": 15,
+      "customerType": "Nuevo Cliente",
+      "hasActiveDelivery": false,
+      "currentDeliveryId": null,
+      "driverKycDocs": [
+        "https://firebasestorage.googleapis.com/v0/b/punto-21481.firebasestorage.app/o/kyc%2F2LbBodbzkNbyTpAHeBSeLj3XSPo2%2Fdriver_id_front.jpg?alt=media&token=32c78c98-e771-479b-9e61-a086e00290cc",
+        "https://firebasestorage.googleapis.com/v0/b/punto-21481.firebasestorage.app/o/kyc%2F2LbBodbzkNbyTpAHeBSeLj3XSPo2%2Fdriver_id_back.jpg?alt=media&token=dcd6b163-f47a-4037-bc49-3cb88bac4750",
+        "https://firebasestorage.googleapis.com/v0/b/punto-21481.firebasestorage.app/o/kyc%2F2LbBodbzkNbyTpAHeBSeLj3XSPo2%2Fdriver_selfie.jpg?alt=media&token=c0989474-a262-4667-8b64-a5746eb00f58"
+      ],
+      "avatar": null,
+      "createdAt": "2026-06-19T22:17:53.165000+00:00",
+      "isOnline": true,
+      "addresses": [
+        {
+          "address": "Carrera 4, # 3-42, San Vicente Del Cagu\u00e1n",
+          "details": "Casa de bloques frente a instrumentos publicos",
+          "location": {
+            "latitude": 2.1128346,
+            "longitude": -74.7680749
+          },
+          "id": "1781908936206",
+          "alias": "Oficina"
+        }
+      ]
+    }
+  ],
+  "stores": [
+    {
+      "paymentSettings": {
+        "acceptsNequi": true,
+        "daviplataPhone": "",
+        "bancolombiaType": "Ahorros",
+        "bancolombiaName": "",
+        "acceptsCash": true,
+        "bancolombiaAccount": "",
+        "nequiPhone": "3105693332",
+        "acceptsBancolombia": false,
+        "acceptsDaviplata": false
+      },
+      "description": "Las mejores hamburguesas",
+      "hasServices": false,
+      "rating": 5,
+      "hasProducts": true,
+      "ratingSum": 15,
+      "productCategories": [
+        "General"
+      ],
+      "ratingCount": 3,
+      "schedule": {
+        "sab": {
+          "from": "09:00",
+          "to": "18:00",
+          "open": false
+        },
+        "mie": {
+          "from": "08:00",
+          "to": "20:00",
+          "open": true
+        },
+        "mar": {
+          "from": "08:00",
+          "to": "20:00",
+          "open": true
+        },
+        "vie": {
+          "from": "08:00",
+          "to": "20:00",
+          "open": true
+        },
+        "jue": {
+          "from": "08:00",
+          "to": "20:00",
+          "open": true
+        },
+        "lun": {
+          "from": "08:00",
+          "to": "20:00",
+          "open": true
+        },
+        "dom": {
+          "from": "09:00",
+          "to": "14:00",
+          "open": false
+        }
+      },
+      "scheduleType": "continuous",
+      "name": "Punto burger",
+      "isOpen": true,
+      "deliveryFee": 2000,
+      "reviews": 0,
+      "time": "15-25 min",
+      "walletBalance": -4000.0,
+      "category": "Comidas r\u00e1pidas",
+      "ownerId": "2LbBodbzkNbyTpAHeBSeLj3XSPo2",
+      "createdAt": "2026-06-19T22:48:31.073Z",
+      "logoUrl": "https://firebasestorage.googleapis.com/v0/b/punto-21481.firebasestorage.app/o/store_logos%2F2LbBodbzkNbyTpAHeBSeLj3XSPo2%2Flogo_1781931933133.jpg?alt=media&token=5cd7cb7c-e97c-4f11-aa99-358358b40830",
+      "location": {
+        "address": "Carrera 4 # 3-42, San Vicente Del Cagu\u00e1n",
+        "latitude": 2.1129857,
+        "longitude": -74.7680439
+      },
+      "isVerified": false
+    }
+  ],
+  "marketing_orders": [
+    {
+      "wompiTransactionId": "12082647-1781915355-99331",
+      "storeName": "Banner Premium",
+      "commerceId": "2LbBodbzkNbyTpAHeBSeLj3XSPo2",
+      "packageId": "banner",
+      "price": 49900,
+      "createdAt": "2026-06-20T00:28:54.653000+00:00",
+      "status": "confirmed",
+      "serviceName": "Paquete de Publicidad"
+    }
+  ],
+  "orders": [
+    {
+      "storeName": "Comercio Helader\u00eda 5",
+      "storeAddress": null,
+      "items": [
+        {
+          "storeName": "Comercio Helader\u00eda 5",
+          "storeId": "test_store_5",
+          "id": "test_prod_4_0",
+          "price": 33000,
+          "qty": 1,
+          "productId": "test_prod_4_0",
+          "name": "Helado de Vainilla"
+        },
+        {
+          "storeName": "Comercio Helader\u00eda 5",
+          "storeId": "test_store_5",
+          "id": "test_prod_4_1",
+          "price": 30000,
+          "qty": 1,
+          "productId": "test_prod_4_1",
+          "name": "Brownie con Helado"
+        },
+        {
+          "storeName": "Comercio Helader\u00eda 5",
+          "storeId": "test_store_5",
+          "id": "test_prod_4_2",
+          "price": 20000,
+          "qty": 1,
+          "productId": "test_prod_4_2",
+          "name": "Torta de Chocolate"
+        },
+        {
+          "storeName": "Comercio Helader\u00eda 5",
+          "storeId": "test_store_5",
+          "id": "test_prod_4_3",
+          "price": 5000,
+          "qty": 1,
+          "productId": "test_prod_4_3",
+          "name": "Malteada de Fresa"
+        },
+        {
+          "storeName": "Comercio Helader\u00eda 5",
+          "storeId": "test_store_5",
+          "id": "test_prod_4_4",
+          "price": 15000,
+          "qty": 1,
+          "productId": "test_prod_4_4",
+          "name": "Cono Sencillo"
+        }
+      ],
+      "estimatedTime": "15 min",
+      "customerName": "Lumer Collazos",
+      "pickupPin": "1133",
+      "serviceFee": 500,
+      "deliveryLocation": {
+        "latitude": 2.1128346,
+        "longitude": -74.7680749
+      },
+      "distance": 2,
+      "instructions": "",
+      "paymentMethod": "cash",
+      "storeLocation": null,
+      "status": "received",
+      "deliveryFee": 3000,
+      "total": 106500,
+      "storeId": "test_store_5",
+      "userId": "2LbBodbzkNbyTpAHeBSeLj3XSPo2",
+      "subtotal": 103000,
+      "createdAt": "2026-06-20T09:49:49.497000+00:00",
+      "storeIcon": "storefront",
+      "storeLogo": null,
+      "customerAddress": "Carrera 4, # 3-42, San Vicente Del Cagu\u00e1n - Casa de bloques frente a instrumentos publicos",
+      "driverId": null,
+      "deliveryPin": "7140",
+      "customerPhone": "+57 3105693332"
+    }
+  ],
+  "marketing_packages": [
+    {
+      "features": [
+        "Posici\u00f3n #1 en la pantalla de inicio",
+        "Visibilidad garantizada",
+        "Estad\u00edsticas en tiempo real"
+      ],
+      "description": "Aparece en lo m\u00e1s alto del inicio de todos los clientes de tu zona durante 7 d\u00edas.",
+      "period": "semana",
+      "id": "banner",
+      "tag": "M\u00e1s popular",
+      "price": 49900,
+      "highlight": true,
+      "title": "Banner Premium",
+      "icon": "campaign",
+      "tagColor": "#98D81C"
+    }
+  ]
+}
