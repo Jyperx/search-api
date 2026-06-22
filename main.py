@@ -392,9 +392,10 @@ ANCHORS = [
     {"id": "A8", "title": "Hogar y Ferretería", "subtitle": "Arregla tu casa", "desc": "Herramientas, bombillos, cintas, plomería, tornillos, pinturas."}
 ]
 
-@app.post("/api/seed-anchors")
-def seed_anchors():
-    """Siembra los vectores ancla base en SQLite."""
+from fastapi import BackgroundTasks
+
+def do_seed_anchors():
+    """Lógica interna para sembrar anclas en segundo plano."""
     try:
         with sqlite_lock:
             conn = get_db_connection()
@@ -430,11 +431,15 @@ def seed_anchors():
                     )
                     conn.commit()
                     conn.close()
-        
-        return {"status": "success", "message": "Vectores ancla sembrados correctamente."}
+        print("Vectores ancla sembrados en segundo plano exitosamente.")
     except Exception as e:
-        print("Error seeding anchors:", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        print("Error seeding anchors en bg:", e)
+
+@app.post("/api/seed-anchors")
+def seed_anchors_endpoint(background_tasks: BackgroundTasks):
+    """Siembra los vectores ancla base en SQLite en bg para evitar Timeout."""
+    background_tasks.add_task(do_seed_anchors)
+    return {"status": "processing", "message": "Vectores ancla sembrándose en segundo plano."}
 
 @app.post("/api/sync")
 def sync_database():
