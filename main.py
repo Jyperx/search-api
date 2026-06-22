@@ -400,6 +400,7 @@ def seed_anchors():
             conn = get_db_connection()
             c = conn.cursor()
             c.execute("DELETE FROM anchor_vectors")
+            c.execute("DELETE FROM anchor_metadata")
             conn.commit()
             conn.close()
         
@@ -420,8 +421,12 @@ def seed_anchors():
                     conn = get_db_connection()
                     c = conn.cursor()
                     c.execute(
-                        "INSERT INTO anchor_vectors (id, title, subtitle, vector) VALUES (?, ?, ?, ?)",
-                        (a['id'], a['title'], a['subtitle'], vector_blob)
+                        "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type) VALUES (?, ?, ?, 'products')",
+                        (a['id'], a['title'], a['subtitle'])
+                    )
+                    c.execute(
+                        "INSERT INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
+                        (a['id'], vector_blob)
                     )
                     conn.commit()
                     conn.close()
