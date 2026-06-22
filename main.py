@@ -1275,11 +1275,24 @@ def get_admin_cerebro():
         
         # 2. Las Anclas de IA actuales
         c.execute("""
-            SELECT a.anchor_id, m.title, m.subtitle, m.keywords, m.category
+            SELECT a.anchor_id, m.title, m.subtitle, m.section_type
             FROM anchor_vectors a
             LEFT JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
         """)
-        anchors = [dict(row) for row in c.fetchall()]
+        
+        # Obtenemos los keywords desde la caché usando el section_type como clave (el nombre del clúster)
+        anchors = []
+        for row in c.fetchall():
+            anchor_dict = dict(row)
+            cluster_name = anchor_dict.get("section_type")
+            
+            # Buscamos en MACRO_CLUSTERS_CACHE
+            if cluster_name and cluster_name in MACRO_CLUSTERS_CACHE:
+                anchor_dict["keywords"] = MACRO_CLUSTERS_CACHE[cluster_name].get("keywords", "Generado por IA")
+            else:
+                anchor_dict["keywords"] = "Generado por IA"
+                
+            anchors.append(anchor_dict)
         
         # 3. 10 productos vectorizados
         c.execute("""
