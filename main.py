@@ -1266,8 +1266,7 @@ def get_system_status():
 def get_admin_cerebro():
     """Devuelve telemetría detallada del Cerebro Vectorial para el panel Admin."""
     try:
-        conn = sqlite3.connect(SQLITE_DB)
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection()
         c = conn.cursor()
         
         # 1. Total Vectores Productos
