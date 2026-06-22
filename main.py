@@ -439,100 +439,121 @@ def sync_database():
             # Vaciar el índice actual
             c.execute("DELETE FROM search_index")
             c.execute("DELETE FROM promotions")
-    
-    # 1. Leer Promociones desde marketing_campaigns
-    import time
-    now_ms = int(time.time() * 1000)
-    
-    camps_ref = db.collection("marketing_campaigns")
-    # Filtramos solo activas y tipo banner, o filtramos localmente para simplificar
-    camps = list(camps_ref.stream())
-    
-    count_banners = 0
-    if len(camps) > 0:
-        for promo in camps:
-            p_data = promo.to_dict()
-            if p_data.get('type') in ['simple', 'premium_product', 'premium_store']:
-                # Validar estado y expiración
-                if p_data.get('status') == 'active':
-                    expires_at = p_data.get('expiresAt', 0)
-                    if expires_at > now_ms:
-                        c.execute("""
-                            INSERT INTO promotions (id, type, targetUrl, imageUrl, storeId, emoji, title, subtitle, bg, titleColor, subtitleColor)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (
-                            promo.id,
-                            p_data.get('type', 'simple'),
-                            p_data.get('targetUrl', ''),
-                            p_data.get('imageUrl', ''),
-                            p_data.get('commerceId', ''),
-                            p_data.get('emoji', ''),
-                            p_data.get('title', ''),
-                            p_data.get('subtitle', ''),
-                            p_data.get('bg', '#000'),
-                            p_data.get('titleColor', '#FFF'),
-                            p_data.get('subtitleColor', '#FFF')
-                        ))
-                        count_banners += 1
-
-    if count_banners == 0:
-        # Fallback si no hay banners
-        default_ads = [
-            ("1", "simple", "store", "", "", "local-offer", "Descubre Ofertas", "En los mejores comercios", "#FFE4E1", "#DC143C", "#CD5C5C")
-        ]
-        for ad in default_ads:
-            c.execute("INSERT INTO promotions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ad)
-
-    # 2. Leer Comercios
-    stores_ref = db.collection("stores")
-    stores = stores_ref.stream()
-    
-    count = 0
-    for store in stores:
-        s_data = store.to_dict()
-        s_id = store.id
-        
-        # Insertar el comercio en el índice
-        c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
-        """, (
-            s_id, 'store', s_id, 
-            s_data.get('name', ''), 
-            s_data.get('category', ''), 
-            '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', '')),
-                        1 if s_data.get('isOpen', True) else 0
-                    ))
-        count += 1
-        
-        # Leer los productos de este comercio (Sub-colección)
-        products_ref = stores_ref.document(s_id).collection("products")
-        for product in products_ref.stream():
-            p_data = product.to_dict()
-            c.execute("""
-                INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-            """, (
-                product.id, 'product', s_id, 
-                p_data.get('name', ''), 
-                p_data.get('category', ''), 
-                p_data.get('description', ''), 
-                str(p_data.get('price', '')),
-                p_data.get('icon', ''),
-                p_data.get('imageUrl', ''),
-                1 if p_data.get('onSale') else 0,
-                p_data.get('salePrice', None),
-                p_data.get('likes', 0),
-                p_data.get('views', 0),
-                p_data.get('purchases', 0),
-                        1 if p_data.get('available', True) else 0
-                    ))
-            count += 1
-            if p_data.get('available', True):
-                vector_worker_pool.submit(async_index_product_vector, product.id, p_data)
-
             conn.commit()
             conn.close()
+    
+        # 1. Leer Promociones desde marketing_campaigns
+        import time
+        now_ms = int(time.time() * 1000)
+        
+        camps_ref = db.collection("marketing_campaigns")
+        # Filtramos solo activas y tipo banner, o filtramos localmente para simplificar
+        camps = list(camps_ref.stream())
+        
+        count_banners = 0
+        if len(camps) > 0:
+            with sqlite_lock:
+                conn = get_db_connection()
+                c = conn.cursor()
+                for promo in camps:
+                    p_data = promo.to_dict()
+                    if p_data.get('type') in ['simple', 'premium_product', 'premium_store']:
+                        # Validar estado y expiración
+                        if p_data.get('status') == 'active':
+                            expires_at = p_data.get('expiresAt', 0)
+                            if expires_at > now_ms:
+                                c.execute("""
+                                    INSERT INTO promotions (id, type, targetUrl, imageUrl, storeId, emoji, title, subtitle, bg, titleColor, subtitleColor)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, (
+                                    promo.id,
+                                    p_data.get('type', 'simple'),
+                                    p_data.get('targetUrl', ''),
+                                    p_data.get('imageUrl', ''),
+                                    p_data.get('commerceId', ''),
+                                    p_data.get('emoji', ''),
+                                    p_data.get('title', ''),
+                                    p_data.get('subtitle', ''),
+                                    p_data.get('bg', '#000'),
+                                    p_data.get('titleColor', '#FFF'),
+                                    p_data.get('subtitleColor', '#FFF')
+                                ))
+                                count_banners += 1
+                conn.commit()
+                conn.close()
+
+        if count_banners == 0:
+            # Fallback si no hay banners
+            default_ads = [
+                ("1", "simple", "store", "", "", "local-offer", "Descubre Ofertas", "En los mejores comercios", "#FFE4E1", "#DC143C", "#CD5C5C")
+            ]
+            with sqlite_lock:
+                conn = get_db_connection()
+                c = conn.cursor()
+                for ad in default_ads:
+                    c.execute("INSERT INTO promotions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", ad)
+                conn.commit()
+                conn.close()
+
+        # 2. Leer Comercios
+        stores_ref = db.collection("stores")
+        stores = stores_ref.stream()
+        
+        count = 0
+        for store in stores:
+            s_data = store.to_dict()
+            s_id = store.id
+            
+            with sqlite_lock:
+                conn = get_db_connection()
+                c = conn.cursor()
+                # Insertar el comercio en el índice
+                c.execute("""
+                    INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
+                """, (
+                    s_id, 'store', s_id, 
+                    s_data.get('name', ''), 
+                    s_data.get('category', ''), 
+                    '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', '')),
+                                1 if s_data.get('isOpen', True) else 0
+                            ))
+                count += 1
+                conn.commit()
+                conn.close()
+            
+            # Leer los productos de este comercio (Sub-colección)
+            products_ref = stores_ref.document(s_id).collection("products")
+            products = products_ref.stream()
+            
+            with sqlite_lock:
+                conn = get_db_connection()
+                c = conn.cursor()
+                for product in products:
+                    p_data = product.to_dict()
+                    c.execute("""
+                        INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    """, (
+                        product.id, 'product', s_id, 
+                        p_data.get('name', ''), 
+                        p_data.get('category', ''), 
+                        p_data.get('description', ''), 
+                        str(p_data.get('price', '')),
+                        p_data.get('icon', ''),
+                        p_data.get('imageUrl', ''),
+                        1 if p_data.get('onSale') else 0,
+                        p_data.get('salePrice', None),
+                        p_data.get('likes', 0),
+                        p_data.get('views', 0),
+                        p_data.get('purchases', 0),
+                                1 if p_data.get('available', True) else 0
+                            ))
+                    count += 1
+                    if p_data.get('available', True):
+                        vector_worker_pool.submit(async_index_product_vector, product.id, p_data)
+                conn.commit()
+                conn.close()
         
         return {"message": "Sincronización exitosa", "items_indexed": count}
     except Exception as e:
