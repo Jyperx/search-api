@@ -396,9 +396,10 @@ ANCHORS = [
 def seed_anchors():
     """Siembra los vectores ancla base en SQLite."""
     try:
-        conn = get_db_connection()
-        c = conn.cursor()
-        c.execute("DELETE FROM anchor_vectors")
+        with sqlite_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM anchor_vectors")
         
         for a in ANCHORS:
             text = f"{a['title']} - {a['desc']}"
@@ -417,8 +418,8 @@ def seed_anchors():
                     "INSERT INTO anchor_vectors (id, title, subtitle, vector) VALUES (?, ?, ?, ?)",
                     (a['id'], a['title'], a['subtitle'], vector_blob)
                 )
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
         return {"status": "success", "message": "Vectores ancla sembrados correctamente."}
     except Exception as e:
         print("Error seeding anchors:", e)
@@ -431,12 +432,13 @@ def sync_database():
         if not db:
             raise HTTPException(status_code=500, detail="Firebase no está inicializado.")
         
-        conn = get_db_connection()
-        c = conn.cursor()
-        
-        # Vaciar el índice actual
-        c.execute("DELETE FROM search_index")
-        c.execute("DELETE FROM promotions")
+        with sqlite_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
+            
+            # Vaciar el índice actual
+            c.execute("DELETE FROM search_index")
+            c.execute("DELETE FROM promotions")
     
     # 1. Leer Promociones desde marketing_campaigns
     import time
@@ -529,8 +531,8 @@ def sync_database():
             if p_data.get('available', True):
                 vector_worker_pool.submit(async_index_product_vector, product.id, p_data)
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
         
         return {"message": "Sincronización exitosa", "items_indexed": count}
     except Exception as e:
@@ -543,58 +545,59 @@ def sync_store(store_id: str):
     if not db:
         raise HTTPException(status_code=500, detail="Firebase no está inicializado.")
         
-    conn = sqlite3.connect(SQLITE_DB)
-    c = conn.cursor()
-    
-    # 1. Eliminar datos antiguos del comercio
-    c.execute("DELETE FROM search_index WHERE storeId = ?", (store_id,))
-    
-    count = 0
-    # 2. Leer Comercio
-    store_ref = db.collection("stores").document(store_id)
-    store_doc = store_ref.get()
-    
-    if store_doc.exists:
-        s_data = store_doc.to_dict()
-        c.execute("""
-            INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
-        """, (
-            store_id, 'store', store_id, 
-            s_data.get('name', ''), 
-            s_data.get('category', ''), 
-            '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', '')),
-                        1 if s_data.get('isOpen', True) else 0
-                    ))
-        count += 1
+    with sqlite_lock:
+        conn = get_db_connection()
+        c = conn.cursor()
         
-        # 3. Leer Productos
-        products_ref = store_ref.collection("products")
-        for product in products_ref.stream():
-            p_data = product.to_dict()
+        # 1. Eliminar datos antiguos del comercio
+        c.execute("DELETE FROM search_index WHERE storeId = ?", (store_id,))
+        
+        count = 0
+        # 2. Leer Comercio
+        store_ref = db.collection("stores").document(store_id)
+        store_doc = store_ref.get()
+        
+        if store_doc.exists:
+            s_data = store_doc.to_dict()
             c.execute("""
                 INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
             """, (
-                product.id, 'product', store_id, 
-                p_data.get('name', ''), 
-                p_data.get('category', ''), 
-                p_data.get('description', ''), 
-                str(p_data.get('price', '')),
-                p_data.get('icon', ''),
-                p_data.get('imageUrl', ''),
-                1 if p_data.get('onSale') else 0,
-                p_data.get('salePrice', None),
-                p_data.get('likes', 0),
-                p_data.get('views', 0),
-                p_data.get('purchases', 0),
-                        1 if p_data.get('available', True) else 0
-                    ))
+                store_id, 'store', store_id, 
+                s_data.get('name', ''), 
+                s_data.get('category', ''), 
+                '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', '')),
+                            1 if s_data.get('isOpen', True) else 0
+                        ))
             count += 1
+            
+            # 3. Leer Productos
+            products_ref = store_ref.collection("products")
+            for product in products_ref.stream():
+                p_data = product.to_dict()
+                c.execute("""
+                    INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """, (
+                    product.id, 'product', store_id, 
+                    p_data.get('name', ''), 
+                    p_data.get('category', ''), 
+                    p_data.get('description', ''), 
+                    str(p_data.get('price', '')),
+                    p_data.get('icon', ''),
+                    p_data.get('imageUrl', ''),
+                    1 if p_data.get('onSale') else 0,
+                    p_data.get('salePrice', None),
+                    p_data.get('likes', 0),
+                    p_data.get('views', 0),
+                    p_data.get('purchases', 0),
+                            1 if p_data.get('available', True) else 0
+                        ))
+                count += 1
 
-    conn.commit()
-    conn.close()
-    return {"message": f"Comercio {store_id} sincronizado", "items_indexed": count}
+        conn.commit()
+        conn.close()
+        return {"message": f"Comercio {store_id} sincronizado", "items_indexed": count}
 
 def build_cluster_fts_query(cluster_name, c_val, include_cluster_name=True):
     cluster_match = c_val.get("keywords", "")
