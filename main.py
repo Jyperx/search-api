@@ -1262,6 +1262,50 @@ def get_system_status():
     except Exception as e:
         return {"status": "error", "error": str(e)}
 
+@app.get("/api/admin/cerebro")
+def get_admin_cerebro():
+    """Devuelve telemetría detallada del Cerebro Vectorial para el panel Admin."""
+    try:
+        conn = sqlite3.connect(SQLITE_DB)
+        conn.row_factory = sqlite3.Row
+        c = conn.cursor()
+        
+        # 1. Total Vectores Productos
+        c.execute("SELECT COUNT(*) as c FROM product_vectors")
+        total_product_vectors = c.fetchone()["c"]
+        
+        # 2. Las Anclas de IA actuales
+        c.execute("""
+            SELECT a.anchor_id, m.title, m.subtitle, m.keywords, m.category
+            FROM anchor_vectors a
+            LEFT JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
+        """)
+        anchors = [dict(row) for row in c.fetchall()]
+        
+        # 3. 10 productos vectorizados
+        c.execute("""
+            SELECT p.product_id, s.name, s.category, length(p.embedding) as vec_bytes
+            FROM product_vectors p
+            JOIN search_index s ON p.product_id = s.id AND s.type = 'product'
+            LIMIT 10
+        """)
+        sample_products = [dict(row) for row in c.fetchall()]
+        
+        conn.close()
+        
+        return {
+            "status": "ok",
+            "fts_clusters": MACRO_CLUSTERS_CACHE,
+            "vector_metrics": {
+                "total_product_vectors": total_product_vectors,
+                "anchors_count": len(anchors),
+                "anchors": anchors,
+                "sample_products": sample_products
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/reset-clusters")
 def reset_clusters_to_defaults():
     """Empuja los defaults del código a Firestore, reemplazando los clústeres existentes.
