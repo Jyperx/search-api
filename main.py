@@ -400,6 +400,8 @@ def seed_anchors():
             conn = get_db_connection()
             c = conn.cursor()
             c.execute("DELETE FROM anchor_vectors")
+            conn.commit()
+            conn.close()
         
         for a in ANCHORS:
             text = f"{a['title']} - {a['desc']}"
@@ -414,12 +416,16 @@ def seed_anchors():
             
             if res and 'embedding' in res:
                 vector_blob = sqlite_vec.serialize_float32(res['embedding'])
-                c.execute(
-                    "INSERT INTO anchor_vectors (id, title, subtitle, vector) VALUES (?, ?, ?, ?)",
-                    (a['id'], a['title'], a['subtitle'], vector_blob)
-                )
-            conn.commit()
-            conn.close()
+                with sqlite_lock:
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute(
+                        "INSERT INTO anchor_vectors (id, title, subtitle, vector) VALUES (?, ?, ?, ?)",
+                        (a['id'], a['title'], a['subtitle'], vector_blob)
+                    )
+                    conn.commit()
+                    conn.close()
+        
         return {"status": "success", "message": "Vectores ancla sembrados correctamente."}
     except Exception as e:
         print("Error seeding anchors:", e)
