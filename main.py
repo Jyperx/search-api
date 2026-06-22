@@ -830,142 +830,82 @@ def get_promotions():
     conn.close()
     return {"results": [dict(row) for row in rows]}
 
-class SimulateActivity(BaseModel):
-    category: str
-    days_ago: int
-    is_search: bool = False
-
-class HomeFeedRequest(BaseModel):
-    activities: List[dict] = []
-
 class SimulateRequest(BaseModel):
-    current_hour: int
-    activities: List[SimulateActivity]
+    prompt: str
 
 @app.post("/api/simulate")
 def simulate_home_feed(req: SimulateRequest):
-    """Simulador para probar el Algoritmo V2 en el panel de Admin"""
-    feed_sections = []
-    
-    conn = sqlite3.connect(SQLITE_DB)
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
+    """Simulador para probar el Cerebro Vectorial en el panel de Admin"""
+    try:
+        import google.generativeai as genai
         
-    cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
-    current_hour = req.current_hour
-    
-    # 1. Simular Actividades con Time-Decay
-    for act in req.activities:
-        cat = (act.category or '').lower()
-        multiplier = 1.0
-        if act.days_ago == 0: multiplier = 3.0
-        elif act.days_ago > 7: multiplier = 0.2
-        elif act.days_ago > 30: multiplier = 0.0
+        # 1. Generar vector para el prompt del admin
+        res = genai.embed_content(
+            model=EMBEDDING_MODEL,
+            content=req.prompt,
+            task_type="retrieval_query"
+        )
+        if not res or 'embedding' not in res:
+            return {"status": "error", "error": "No se pudo generar el embedding."}
+            
+        sim_vector = sqlite_vec.serialize_float32(res['embedding'])
         
-        score = (2.0 if act.is_search else 1.0) * multiplier
+        conn = get_db_connection()
+        c = conn.cursor()
         
-        for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
-            if cat in c_val['keywords'].lower() or cat == c_key:
-                cluster_scores[c_key] += score
-                
-    # 2. Conciencia Temporal (Context-Awareness) via TIME_RULES_CACHE
-    for rule in TIME_RULES_CACHE:
-        sh = int(rule.get("startHour", 0))
-        eh = int(rule.get("endHour", 23))
-        rule_cluster = rule.get("cluster", "")
-        boost = float(rule.get("scoreBoost", 0))
+        # 2. Buscar las 3 anclas más afines al prompt
+        c.execute("""
+            SELECT a.anchor_id, m.title, m.subtitle, vec_distance_cosine(a.embedding, ?) AS distance
+            FROM anchor_vectors a
+            JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
+            ORDER BY distance ASC
+            LIMIT 3
+        """, (sim_vector,))
+        anchors = [dict(row) for row in c.fetchall()]
         
-        if rule_cluster in cluster_scores:
-            if sh <= eh:
-                if sh <= current_hour <= eh:
-                    cluster_scores[rule_cluster] += boost
-            else:
-                if current_hour >= sh or current_hour <= eh:
-                    cluster_scores[rule_cluster] += boost
+        feed_sections = []
         
-    # 3. Selección 80/20 (Explotación vs Exploración)
-    sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
-    top_clusters = sorted_clusters[:2]
-    
-    unvisited = [k for k in MACRO_CLUSTERS_CACHE.keys() if k not in top_clusters]
-    exploration_cluster = random.choice(unvisited) if unvisited else None
-    
-    selected_clusters = top_clusters.copy()
-    if exploration_cluster:
-        selected_clusters.append(exploration_cluster)
-        
-    # --- CROSS-SELLING (Venta Cruzada) ---
-    cross_sell_clusters = []
-    for c_sel in selected_clusters:
-        if c_sel in MACRO_CLUSTERS_CACHE:
-            related_str = MACRO_CLUSTERS_CACHE[c_sel].get("relatedClusters", "")
-            if related_str:
-                related_list = [r.strip().lower() for r in related_str.split(",") if r.strip()]
-                for r in related_list:
-                    if r in MACRO_CLUSTERS_CACHE and r not in selected_clusters and r not in cross_sell_clusters:
-                        cross_sell_clusters.append(r)
-    
-    # Añadir máximo 2 de venta cruzada
-    for r in cross_sell_clusters[:2]:
-        selected_clusters.append(r)
-        
-    if not selected_clusters:
-        selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
-        
-    # 4. Construir Secciones Dinámicas (Simulador)
-    for cluster in selected_clusters:
-        if cluster not in MACRO_CLUSTERS_CACHE: continue
-        
-        fts_query = build_cluster_fts_query(cluster, MACRO_CLUSTERS_CACHE[cluster], True)
-        if not fts_query: continue
-        
-        title = random.choice(MACRO_CLUSTERS_CACHE[cluster].get("titles", ["Para ti"]))
-        subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else ("Combina perfecto" if cluster in cross_sell_clusters else "Basado en tus intereses")
-        
-        try:
+        # 3. Para cada ancla, traer 10 productos
+        for anchor in anchors:
             c.execute("""
-                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                       s.name as storeName
-                FROM search_index p
-                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-                WHERE p.type = 'product' AND search_index MATCH ?
-                ORDER BY 
-                    (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
-                    (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
-                    (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
-                    (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
-                    ABS(RANDOM() % 20) DESC
-                LIMIT 15
-            """, (fts_query,))
+                SELECT p.product_id, vec_distance_cosine(p.embedding, a.embedding) AS distance,
+                       s.name, s.category, s.price, s.imageUrl, s.storeId
+                FROM product_vectors p
+                JOIN anchor_vectors a ON a.anchor_id = ?
+                JOIN search_index s ON s.id = p.product_id
+                ORDER BY distance ASC
+                LIMIT 10
+            """, (anchor['anchor_id'],))
+            
             raw_items = c.fetchall()
             
-            # Diversidad: máx 2 productos por tienda
-            store_counts = {}
-            filtered_items = []
+            items = []
             for row in raw_items:
-                sid = row["storeId"]
-                if store_counts.get(sid, 0) < 2:
-                    filtered_items.append(dict(row))
-                    store_counts[sid] = store_counts.get(sid, 0) + 1
-                if len(filtered_items) >= 5:
-                    break
-                    
-            if filtered_items:
-                feed_sections.append({
-                    "id": f"dyn_{cluster}",
-                    "type": "products",
-                    "title": title,
-                    "subtitle": subtitle,
-                    "section_type": "exploration" if cluster == exploration_cluster else ("cross_sell" if cluster in cross_sell_clusters else "interest"),
-                    "items": filtered_items
+                items.append({
+                    "id": row["product_id"],
+                    "name": row["name"],
+                    "category": row["category"],
+                    "price": row["price"],
+                    "imageUrl": row["imageUrl"],
+                    "storeId": row["storeId"],
+                    "storeName": "Tienda Simulada"
                 })
-        except Exception as e:
-            print(f"[Simulate] Error en cluster {cluster}: {e}")
-            continue
-            
-    conn.close()
-    return {"sections": feed_sections}
+                
+            if items:
+                feed_sections.append({
+                    "id": f"sim_anchor_{anchor['anchor_id']}",
+                    "title": anchor['title'],
+                    "subtitle": anchor['subtitle'],
+                    "section_type": "interest",
+                    "items": items
+                })
+                
+        conn.close()
+        return feed_sections
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return []
 
 @app.post("/api/home/{uid}")
 def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
@@ -1267,6 +1207,72 @@ def get_system_status():
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+@app.get("/api/admin/users-vectors")
+def get_admin_users_vectors():
+    """Devuelve los perfiles vectoriales de los usuarios activos calculando su afinidad actual."""
+    try:
+        users_ref = db.collection('users')
+        users = users_ref.limit(50).stream()
+        
+        results = []
+        conn = get_db_connection()
+        c = conn.cursor()
+        
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        def calc_decay(ts):
+            if not ts: return 1.0
+            try:
+                if hasattr(ts, 'timestamp'): pass
+                elif isinstance(ts, str):
+                    try:
+                        ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                    except:
+                        try:
+                            ts = datetime.fromtimestamp(float(ts)/1000, tz=timezone.utc)
+                        except: return 1.0
+                elif isinstance(ts, (int, float)):
+                    ts = datetime.fromtimestamp(ts/1000, tz=timezone.utc)
+                else: return 1.0
+                    
+                days_ago = (now - ts).days
+                if days_ago == 0: return 3.0
+                elif days_ago > 7: return 0.2
+                elif days_ago > 30: return 0.0
+                return 1.0
+            except: return 1.0
+
+        for u in users:
+            udata = u.to_dict()
+            recent_activity = udata.get('recent_activity', [])
+            
+            user_vector = calculate_user_vector(recent_activity, calc_decay)
+            anchors = []
+            if user_vector:
+                c.execute("""
+                    SELECT a.anchor_id, m.title, m.subtitle, vec_distance_cosine(a.embedding, ?) AS distance
+                    FROM anchor_vectors a
+                    JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
+                    ORDER BY distance ASC
+                    LIMIT 2
+                """, (user_vector,))
+                anchors = [dict(row) for row in c.fetchall()]
+            
+            if len(recent_activity) > 0 or len(anchors) > 0:
+                results.append({
+                    "uid": u.id,
+                    "name": udata.get('name', udata.get('email', 'Usuario Anónimo')),
+                    "activity_count": len(recent_activity),
+                    "anchors": anchors
+                })
+                
+        conn.close()
+        return {"status": "ok", "users": results}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
 
 @app.get("/api/admin/cerebro")
 def get_admin_cerebro():
