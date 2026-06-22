@@ -381,6 +381,49 @@ for root, alts in SYNONYMS.items():
         REVERSE_SYNONYMS[alt] = root
 # ==========================================
 
+ANCHORS = [
+    {"id": "A1", "title": "Gustos Culposos", "subtitle": "Para pecar sin remordimiento", "desc": "Comida rápida, hamburguesas grasosas, postres dulces, frituras, pizza, donas."},
+    {"id": "A2", "title": "Cena Rápida", "subtitle": "Sin complicaciones", "desc": "Comida fácil de preparar o lista para comer en la noche, sándwiches, ensaladas ligeras, sushi, wraps."},
+    {"id": "A3", "title": "Desayuno Energético", "subtitle": "Empieza el día con todo", "desc": "Café, huevos, pan, arepas, jugo de naranja, tostadas, tocino."},
+    {"id": "A4", "title": "Mercado Fresco", "subtitle": "Para la alacena", "desc": "Frutas frescas, verduras, lácteos, carnes, abarrotes, despensa."},
+    {"id": "A5", "title": "Farmacia y Cuidado", "subtitle": "Salud y bienestar", "desc": "Medicamentos, vitaminas, cuidado personal, aseo, primeros auxilios."},
+    {"id": "A6", "title": "Mascotas Felices", "subtitle": "Para tu peludo", "desc": "Comida para perros, gatos, arena, juguetes, snacks para mascotas."},
+    {"id": "A7", "title": "Tecnología", "subtitle": "Gadgets y repuestos", "desc": "Celulares, cargadores, audífonos, pantallas, cables, accesorios."},
+    {"id": "A8", "title": "Hogar y Ferretería", "subtitle": "Arregla tu casa", "desc": "Herramientas, bombillos, cintas, plomería, tornillos, pinturas."}
+]
+
+@app.post("/api/seed-anchors")
+def seed_anchors():
+    """Siembra los vectores ancla base en SQLite."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("DELETE FROM anchor_vectors")
+        
+        for a in ANCHORS:
+            text = f"{a['title']} - {a['desc']}"
+            import time
+            res = None
+            for attempt in range(3):
+                try:
+                    res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+                    break
+                except Exception as e:
+                    time.sleep(2 ** attempt)
+            
+            if res and 'embedding' in res:
+                vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+                c.execute(
+                    "INSERT INTO anchor_vectors (id, title, subtitle, vector) VALUES (?, ?, ?, ?)",
+                    (a['id'], a['title'], a['subtitle'], vector_blob)
+                )
+        conn.commit()
+        conn.close()
+        return {"status": "success", "message": "Vectores ancla sembrados correctamente."}
+    except Exception as e:
+        print("Error seeding anchors:", e)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/sync")
 def sync_database():
     """Descarga todos los comercios y productos de Firestore y reconstruye el índice SQLite."""
