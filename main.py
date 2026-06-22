@@ -567,7 +567,13 @@ def sync_database():
                             ))
                     count += 1
                     if p_data.get('available', True):
-                        vector_worker_pool.submit(async_index_product_vector, product.id, p_data)
+                        vector_worker_pool.submit(
+                            async_index_product_vector, 
+                            product.id, 
+                            p_data.get('name', ''), 
+                            p_data.get('category', ''), 
+                            p_data.get('description', '')
+                        )
                 conn.commit()
                 conn.close()
         
