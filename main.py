@@ -1103,8 +1103,9 @@ def search(q: str = "", category: str = "", history: str = ""):
                         seen_ids.add(v_item["id"])
                     
     except Exception as e:
-        print("Error de búsqueda:", e)
-        results = []
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e), "traceback": traceback.format_exc(), "results": []}
     finally:
         conn.close()
     
