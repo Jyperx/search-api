@@ -297,8 +297,17 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func):
     for doc in activity_docs:
         data = doc.to_dict() if hasattr(doc, 'to_dict') else doc
         p_id = data.get('productId')
+        act_type = data.get('type', 'view')
+        
+        # Action Weighting Multiplier
+        act_multiplier = 1.0
+        if act_type == 'purchase': act_multiplier = 5.0
+        elif act_type == 'cart': act_multiplier = 3.0
+        elif act_type == 'search': act_multiplier = 2.0
+        elif act_type == 'view' or act_type == 'click': act_multiplier = 1.0
+        
         if p_id:
-            weight = calculate_time_decay_func(data.get('timestamp'))
+            weight = calculate_time_decay_func(data.get('timestamp')) * act_multiplier
             if p_id not in decay_weights:
                 product_ids.append(p_id)
             decay_weights[p_id] = decay_weights.get(p_id, 0.0) + weight
@@ -1008,6 +1017,23 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 LIMIT 2
             """, (user_vector,))
             anchors = [dict(row) for row in c.fetchall()]
+            
+            # 2.5 Inyección de Exploración
+            c.execute("""
+                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules
+                FROM anchor_vectors a
+                JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
+                WHERE a.anchor_id NOT IN (?, ?)
+                ORDER BY RANDOM()
+                LIMIT 1
+            """, (anchors[0]['anchor_id'] if len(anchors) > 0 else '', anchors[1]['anchor_id'] if len(anchors) > 1 else ''))
+            random_anchor = c.fetchone()
+            if random_anchor:
+                random_anchor = dict(random_anchor)
+                random_anchor["title"] = "Sal de la rutina"
+                random_anchor["subtitle"] = "Descubre algo nuevo hoy"
+                anchors.append(random_anchor)
+                
         except Exception as e:
             print(f"[Cruce 1] Error en KNN Anclas: {e}")
     else:
@@ -1057,8 +1083,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 try: exclude_rules = json.loads(anchor["exclude_rules"])
                 except: pass
                 
-            store_counts = {}
-            filtered_items = []
+            candidate_items = []
+            import math
             
             for raw_row in raw_items:
                 row = dict(raw_row)
@@ -1080,11 +1106,33 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 if is_excluded: continue
                 
                 rid = row["id"]
-                sid = row["storeId"]
                 if rid in global_seen_ids: continue
+                
+                # Hybrid Scoring Equation
+                affinity = max(0.0, 1.0 - row["distance"])
+                purchases = float(row.get("purchases") or 0)
+                likes = float(row.get("likes") or 0)
+                views = float(row.get("views") or 0)
+                
+                popularity = math.log1p(purchases + likes * 0.5) / 10.0
+                novelty = 0.2 if (purchases == 0 and views < 10) else 0.0
+                sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
+                
+                row["final_score"] = (affinity * 0.6) + (popularity * 0.2) + (novelty * 0.1) + (sale_boost * 0.1)
+                candidate_items.append(row)
+                
+            # Re-Rank candidates
+            candidate_items.sort(key=lambda x: x["final_score"], reverse=True)
+            
+            store_counts = {}
+            filtered_items = []
+            
+            for row in candidate_items:
+                rid = row["id"]
+                sid = row["storeId"]
                 if store_counts.get(sid, 0) >= 4: continue # Máximo 4 por tienda
                 
-                filtered_items.append(dict(row))
+                filtered_items.append(row)
                 global_seen_ids.add(rid)
                 store_counts[sid] = store_counts.get(sid, 0) + 1
                 
@@ -1153,23 +1201,41 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 FROM search_index p
                 LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
                 WHERE p.type = 'product' AND search_index MATCH ?
-                ORDER BY 
-                    (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
-                    (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
-                    ABS(RANDOM() % 20) DESC
-                LIMIT 20
+                ORDER BY RANDOM()
+                LIMIT 40
             """, (fts_query,))
             
             raw_items = c.fetchall()
+            candidate_items = []
+            import math
+            
+            for raw_row in raw_items:
+                row = dict(raw_row)
+                rid = row["id"]
+                if rid in global_seen_ids: continue
+                
+                purchases = float(row.get("purchases") or 0)
+                likes = float(row.get("likes") or 0)
+                views = float(row.get("views") or 0)
+                
+                popularity = math.log1p(purchases + likes * 0.5) / 10.0
+                novelty = 0.2 if (purchases == 0 and views < 10) else 0.0
+                sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
+                random_noise = (abs(hash(rid)) % 100) / 1000.0 # 0.0 to 0.1 noise
+                
+                row["final_score"] = popularity + novelty + sale_boost + random_noise
+                candidate_items.append(row)
+                
+            candidate_items.sort(key=lambda x: x["final_score"], reverse=True)
+            
             store_counts = {}
             filtered_items = []
             
-            for row in raw_items:
+            for row in candidate_items:
                 rid = row["id"]
                 sid = row["storeId"]
-                if rid in global_seen_ids: continue
-                if store_counts.get(sid, 0) >= 4: continue # Aumentado a 4 para DB pequeñas
-                filtered_items.append(dict(row))
+                if store_counts.get(sid, 0) >= 4: continue
+                filtered_items.append(row)
                 global_seen_ids.add(rid)
                 store_counts[sid] = store_counts.get(sid, 0) + 1
                 if len(filtered_items) >= 5: break
