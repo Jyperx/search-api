@@ -373,59 +373,74 @@ def generate_product_embedding(name, category, description):
     return None
 
 def async_index_product_vector(p_id, name, category, description):
-    vector_bytes = generate_product_embedding(name, category, description)
-    if vector_bytes:
-        try:
-            with sqlite_lock:
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute("DELETE FROM product_vectors WHERE product_id = ?", (p_id,))
-                c.execute("INSERT INTO product_vectors (product_id, embedding) VALUES (?, ?)", (p_id, vector_bytes))
-                conn.commit()
-                conn.close()
-        except Exception as e:
-            print(f"Error guardando vector: {e}")
+    global global_sync_state
+    try:
+        vector_bytes = generate_product_embedding(name, category, description)
+        if vector_bytes:
+            try:
+                with sqlite_lock:
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute("DELETE FROM product_vectors WHERE product_id = ?", (p_id,))
+                    c.execute("INSERT INTO product_vectors (product_id, embedding) VALUES (?, ?)", (p_id, vector_bytes))
+                    conn.commit()
+                    conn.close()
+            except Exception as e:
+                print(f"Error guardando vector: {e}")
+    finally:
+        global_sync_state["completed_products"] += 1
+        if global_sync_state["completed_products"] >= global_sync_state["total_products"] and global_sync_state["total_products"] > 0:
+            global_sync_state["is_syncing"] = False
+            global_sync_state["status"] = "Completado"
 
 def async_index_store_vector(s_id, name, category, description, products_summary):
-    intent_str = ""
-    prompt = f"Actúa como un recomendador experto. Para el comercio '{name}' de categoría '{category}' que vende '{products_summary}', responde ÚNICAMENTE con 5 palabras clave o tipos de alimentos/servicios separados por comas que se pueden encontrar allí (ej. 'carnes, asados, almuerzos, familiar' o 'licor, rumba, noche, cervezas')."
-    
-    import time
-    for attempt in range(2):
-        try:
-            llm_model_instance = genai.GenerativeModel(LLM_MODEL)
-            llm_res = llm_model_instance.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(temperature=0.3, max_output_tokens=40)
-            )
-            if llm_res and llm_res.text:
-                intent_str = f" [Contexto Inteligente: {llm_res.text.strip()}]"
-                break
-        except Exception as e:
-            print(f"Error generando LLM intent para store {name}: {e}")
-            time.sleep(1)
+    global global_sync_state
+    try:
+        intent_str = ""
+        prompt = f"Actúa como un recomendador experto. Para el comercio '{name}' de categoría '{category}' que vende '{products_summary}', responde ÚNICAMENTE con 5 palabras clave o tipos de alimentos/servicios separados por comas que se pueden encontrar allí (ej. 'carnes, asados, almuerzos, familiar' o 'licor, rumba, noche, cervezas')."
+        
+        import time
+        for attempt in range(2):
+            try:
+                llm_model_instance = genai.GenerativeModel(LLM_MODEL)
+                llm_res = llm_model_instance.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(temperature=0.3, max_output_tokens=40)
+                )
+                if llm_res and llm_res.text:
+                    intent_str = f" [Contexto Inteligente: {llm_res.text.strip()}]"
+                    break
+            except Exception as e:
+                print(f"Error generando LLM intent para store {name}: {e}")
+                time.sleep(1)
 
-    text = f"Comercio: {name}. Categoría: {category}. Descripción: {description}. Productos principales que vende: {products_summary}. {intent_str}"
-    vector_bytes = None
-    for attempt in range(3):
-        try:
-            res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
-            vector_bytes = sqlite_vec.serialize_float32(res['embedding'][:768])
-            break
-        except Exception as e:
-            time.sleep(2 ** attempt)
-            
-    if vector_bytes:
-        try:
-            with sqlite_lock:
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute("DELETE FROM store_vectors WHERE store_id = ?", (s_id,))
-                c.execute("INSERT INTO store_vectors (store_id, embedding) VALUES (?, ?)", (s_id, vector_bytes))
-                conn.commit()
-                conn.close()
-        except Exception as e:
-            print(f"Error guardando vector de tienda: {e}")
+        text = f"Comercio: {name}. Categoría: {category}. Descripción: {description}. Productos principales que vende: {products_summary}. {intent_str}"
+        vector_bytes = None
+        for attempt in range(3):
+            try:
+                res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+                vector_bytes = sqlite_vec.serialize_float32(res['embedding'][:768])
+                break
+            except Exception as e:
+                time.sleep(2 ** attempt)
+                
+        if vector_bytes:
+            try:
+                with sqlite_lock:
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute("DELETE FROM store_vectors WHERE store_id = ?", (s_id,))
+                    c.execute("INSERT INTO store_vectors (store_id, embedding) VALUES (?, ?)", (s_id, vector_bytes))
+                    conn.commit()
+                    conn.close()
+            except Exception as e:
+                print(f"Error guardando vector de tienda: {e}")
+    finally:
+        # Los comercios también suman al progreso
+        global_sync_state["completed_products"] += 1
+        if global_sync_state["completed_products"] >= global_sync_state["total_products"] and global_sync_state["total_products"] > 0:
+            global_sync_state["is_syncing"] = False
+            global_sync_state["status"] = "Completado"
 
 def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour=None):
     product_ids = []
@@ -587,6 +602,11 @@ from fastapi import BackgroundTasks
 
 def do_seed_anchors():
     """Lógica interna para sembrar anclas en segundo plano."""
+    global global_sync_state
+    global_sync_state["is_syncing"] = True
+    global_sync_state["total_products"] = 1
+    global_sync_state["completed_products"] = 0
+    global_sync_state["status"] = "Analizando categorías..."
     try:
         with sqlite_lock:
             conn = get_db_connection()
@@ -614,7 +634,6 @@ def do_seed_anchors():
             cat_name = row["category"]
             if not cat_name or str(cat_name).strip().lower() == "general": continue
             
-            # Generar un ID único basado en el nombre de la categoría
             cat_id = "DYN_CAT_" + hashlib.md5(cat_name.encode()).hexdigest()[:8]
             
             dynamic_anchors.append({
@@ -624,8 +643,9 @@ def do_seed_anchors():
                 "desc": f"Catálogo completo de {cat_name.lower()} y similares."
             })
             
-        # Combinar anclas orgánicas con las ambientales fijas
         all_anchors = dynamic_anchors + ENV_ANCHORS
+        global_sync_state["total_products"] = len(all_anchors)
+        global_sync_state["status"] = f"Sembrando {len(all_anchors)} anclas..."
         
         for a in all_anchors:
             text = f"{a['title']} - {a['desc']}"
@@ -656,9 +676,16 @@ def do_seed_anchors():
                     )
                     conn.commit()
                     conn.close()
+                    
+            global_sync_state["completed_products"] += 1
+                    
         print(f"Vectores ancla dinámicos sembrados ({len(dynamic_anchors)} categorias + {len(ENV_ANCHORS)} ambientales).")
+        global_sync_state["status"] = "Completado"
     except Exception as e:
         print("Error seeding anchors en bg:", e)
+        global_sync_state["status"] = f"Error: {e}"
+    finally:
+        global_sync_state["is_syncing"] = False
 
 @app.post("/api/seed-anchors")
 def seed_anchors_endpoint(background_tasks: BackgroundTasks):
@@ -666,18 +693,15 @@ def seed_anchors_endpoint(background_tasks: BackgroundTasks):
     background_tasks.add_task(do_seed_anchors)
     return {"status": "processing", "message": "Vectores ancla sembrándose en segundo plano."}
 
-@app.post("/api/sync")
-def sync_database():
-    """Descarga todos los comercios y productos de Firestore y reconstruye el índice SQLite."""
+def do_sync_database():
+    """Lógica interna de sincronización en segundo plano."""
     global global_sync_state
-    global_sync_state["is_syncing"] = True
-    global_sync_state["total_products"] = 0
-    global_sync_state["completed_products"] = 0
-    global_sync_state["status"] = "Leyendo de Firebase..."
     try:
         if not db:
-            raise HTTPException(status_code=500, detail="Firebase no está inicializado.")
-        
+            global_sync_state["is_syncing"] = False
+            global_sync_state["status"] = "Error: Firebase no está inicializado"
+            return
+            
         with sqlite_lock:
             conn = get_db_connection()
             c = conn.cursor()
@@ -696,7 +720,6 @@ def sync_database():
         now_ms = int(time.time() * 1000)
         
         camps_ref = db.collection("marketing_campaigns")
-        # Filtramos solo activas y tipo banner, o filtramos localmente para simplificar
         camps = list(camps_ref.stream())
         
         count_banners = 0
@@ -707,7 +730,6 @@ def sync_database():
                 for promo in camps:
                     p_data = promo.to_dict()
                     if p_data.get('type') in ['simple', 'premium_product', 'premium_store']:
-                        # Validar estado y expiración
                         if p_data.get('status') == 'active':
                             expires_at = p_data.get('expiresAt', 0)
                             if expires_at > now_ms:
@@ -732,7 +754,6 @@ def sync_database():
                 conn.close()
 
         if count_banners == 0:
-            # Fallback si no hay banners
             default_ads = [
                 ("1", "simple", "store", "", "", "local-offer", "Descubre Ofertas", "En los mejores comercios", "#FFE4E1", "#DC143C", "#CD5C5C")
             ]
@@ -744,15 +765,31 @@ def sync_database():
                 conn.commit()
                 conn.close()
 
+        global_sync_state["status"] = "Leyendo Comercios..."
+        
         # 2. Leer Comercios
         stores_ref = db.collection("stores")
-        stores = stores_ref.stream()
+        stores = list(stores_ref.stream())
         
         count = 0
+        products_count = 0
+        # Primero contamos cuántos productos y comercios hay en total para el progreso
+        total_items_to_process = len(stores)
+        
+        # Guardar en memoria para no volver a descargar
+        stores_data = []
         for store in stores:
             s_data = store.to_dict()
             s_id = store.id
+            products_ref = stores_ref.document(s_id).collection("products")
+            products = list(products_ref.stream())
+            total_items_to_process += len(products)
+            stores_data.append((s_id, s_data, products))
             
+        global_sync_state["total_products"] = total_items_to_process
+        global_sync_state["status"] = "Vectorizando datos con IA..."
+        
+        for s_id, s_data, products in stores_data:
             with sqlite_lock:
                 conn = get_db_connection()
                 c = conn.cursor()
@@ -770,10 +807,6 @@ def sync_database():
                 count += 1
                 conn.commit()
                 conn.close()
-            
-            # Leer los productos de este comercio (Sub-colección)
-            products_ref = stores_ref.document(s_id).collection("products")
-            products = products_ref.stream()
             
             with sqlite_lock:
                 conn = get_db_connection()
@@ -801,7 +834,6 @@ def sync_database():
                             ))
                     count += 1
                     if p_data.get('available', True):
-                        global_sync_state["total_products"] += 1
                         store_product_names.append(p_data.get('name', ''))
                         vector_worker_pool.submit(
                             async_index_product_vector, 
@@ -810,6 +842,9 @@ def sync_database():
                             p_data.get('category', ''), 
                             p_data.get('description', '')
                         )
+                    else:
+                        # Si no se vectoriza, contamos igual para el progreso
+                        global_sync_state["completed_products"] += 1
                 conn.commit()
                 conn.close()
                 
@@ -817,10 +852,24 @@ def sync_database():
             products_summary = ", ".join(store_product_names[:10])
             vector_worker_pool.submit(async_index_store_vector, s_id, s_data.get('name', ''), s_data.get('category', ''), s_data.get('description', ''), products_summary)
         
-        return {"message": "Sincronización exitosa", "items_indexed": count}
+        # El progreso finalizará cuando terminen los hilos, ya que ellos mismos comprueban si completed_products >= total_products
+        
     except Exception as e:
         print("Sync Error:", e)
-        raise HTTPException(status_code=500, detail=str(e))
+        global_sync_state["is_syncing"] = False
+        global_sync_state["status"] = f"Error: {str(e)}"
+
+@app.post("/api/sync")
+def sync_database(background_tasks: BackgroundTasks):
+    """Descarga todos los comercios y productos de Firestore y reconstruye el índice SQLite."""
+    global global_sync_state
+    global_sync_state["is_syncing"] = True
+    global_sync_state["total_products"] = 1 # Para que no divida por 0
+    global_sync_state["completed_products"] = 0
+    global_sync_state["status"] = "Iniciando sincronización..."
+    
+    background_tasks.add_task(do_sync_database)
+    return {"status": "processing", "message": "Sincronización en curso"}
 
 @app.post("/api/sync/store/{store_id}")
 def sync_store(store_id: str):
