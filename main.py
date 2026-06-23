@@ -12,7 +12,7 @@ import random
 from datetime import datetime, timezone
 import threading
 sqlite_lock = threading.Lock()
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 import firebase_admin
