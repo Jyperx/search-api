@@ -342,7 +342,7 @@ def init_db():
             clicked_id TEXT,
             clicked_category TEXT,
             result_count INTEGER DEFAULT 0,
-            timestamp TEXT DEFAULT (datetime(''now''))
+            timestamp TEXT DEFAULT (datetime('now'))
         )
     ''')
     c.execute('CREATE INDEX IF NOT EXISTS idx_search_logs_query ON search_logs(query)')
