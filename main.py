@@ -489,6 +489,13 @@ ANCHORS = [
     {"id": "A8", "title": "Hogar y Ferretería", "subtitle": "Arregla tu casa", "desc": "Herramientas, bombillos, cintas, plomería, tornillos, pinturas."}
 ]
 
+ENV_ANCHORS = [
+    {"id": "ENV_FRIO_NOCHE", "title": "Ideal para el frío de hoy", "subtitle": "Combate el frío", "desc": "Noche fría y lluviosa. Comida caliente, caldos, domicilios rápidos, sopas, pizza, hamburguesas, cobijas, sacos."},
+    {"id": "ENV_CALOR_DIA", "title": "Refréscate del calor", "subtitle": "Perfecto para este sol", "desc": "Día soleado y caluroso. Bebidas frías, helados, jugos, paletas, ensaladas de frutas, ropa fresca, gafas."},
+    {"id": "ENV_FRIO_DIA", "title": "Entra en calor", "subtitle": "Acompáñalo con algo caliente", "desc": "Día frío o nublado. Café, tinto, chocolate caliente, empanadas, panadería, postres, tamal, chaquetas."},
+    {"id": "ENV_CALOR_NOCHE", "title": "Noche cálida", "subtitle": "Para compartir y refrescarte", "desc": "Noche calurosa. Helado, cerveza, licor, cócteles, refrescos fríos, bebidas heladas."}
+]
+
 from fastapi import BackgroundTasks
 
 def do_seed_anchors():
@@ -502,7 +509,7 @@ def do_seed_anchors():
             conn.commit()
             conn.close()
         
-        for a in ANCHORS:
+        for a in ANCHORS + ENV_ANCHORS:
             text = f"{a['title']} - {a['desc']}"
             import time
             res = None
@@ -1212,11 +1219,21 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 likes = float(row.get("likes") or 0)
                 views = float(row.get("views") or 0)
                 
-                popularity = math.log1p(purchases + likes * 0.5) / 10.0
+                # Conversion Rate Boost
+                cr_boost = 0.0
+                if views >= 10:
+                    cr = purchases / views
+                    if cr > 0.1: cr_boost = cr * 2.0
+                    
+                # Suavizado Bayesiano Simple
+                C, m = 20.0, 1.0
+                bayes_purchases = (views * (purchases / (views + 0.1)) + C * m) / (views + C)
+                
+                popularity = math.log1p(bayes_purchases * 5.0 + likes * 0.5) / 10.0
                 novelty = 0.2 if (purchases == 0 and views <= 15) else (-0.3 if purchases == 0 and views > 50 else 0.0)
                 sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
                 
-                row["final_score"] = (affinity * 0.6) + (popularity * 0.2) + (novelty * 0.1) + (sale_boost * 0.1)
+                row["final_score"] = (affinity * 0.6) + (popularity * 0.2) + cr_boost + (novelty * 0.1) + (sale_boost * 0.1)
                 candidate_items.append(row)
                 
             # Re-Rank candidates
@@ -1306,14 +1323,93 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                     temp, code = 20, 0
                     
             is_night = current_hour < 6 or current_hour >= 18
+            env_anchor_id = None
             if temp >= 24:
                 key = "calor_noche" if is_night else "calor_dia"
+                env_anchor_id = "ENV_CALOR_NOCHE" if is_night else "ENV_CALOR_DIA"
                 cluster_scores[key] = cluster_scores.get(key, 0) + 15.0
             elif temp <= 16 or code >= 50: # Lluvia
                 key = "frio_noche" if is_night else "frio_dia"
+                env_anchor_id = "ENV_FRIO_NOCHE" if is_night else "ENV_FRIO_DIA"
                 cluster_scores[key] = cluster_scores.get(key, 0) + 15.0
+
+            if env_anchor_id:
+                # Buscar el ancla ambiental y sus productos vectoriales
+                c.execute("""
+                    SELECT p.product_id, vec_distance_cosine(p.embedding, a.embedding) AS distance,
+                           s.id, s.type, s.storeId, s.name, s.category, s.description,
+                           s.price, s.icon, s.imageUrl, s.onSale, s.salePrice, s.likes, s.views, s.purchases,
+                           st.name as storeName, a_meta.title, a_meta.subtitle
+                    FROM product_vectors p
+                    JOIN anchor_vectors a ON a.anchor_id = ?
+                    JOIN anchor_metadata a_meta ON a_meta.anchor_id = a.anchor_id
+                    JOIN search_index s ON p.product_id = s.id AND s.type = 'product'
+                    LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') st ON st.id = s.storeId
+                    WHERE CAST(s.available AS INTEGER) = 1 AND CAST(st.isOpen AS INTEGER) = 1
+                    ORDER BY distance ASC
+                    LIMIT 20
+                """, (env_anchor_id,))
+                
+                env_items = c.fetchall()
+                filtered_env = []
+                store_counts = {}
+                env_title = "Para ti"
+                env_subtitle = ""
+                import math
+                
+                env_candidates = []
+                for raw_row in env_items:
+                    row = dict(raw_row)
+                    if row["distance"] > 0.8: continue
+                    rid, sid = row["id"], row["storeId"]
+                    if rid in global_seen_ids: continue
+                    
+                    env_title = row.get("title", env_title)
+                    env_subtitle = row.get("subtitle", env_subtitle)
+                    
+                    # Multiplicadores Avanzados (Conversión y Bayesiano)
+                    purchases = float(row.get("purchases") or 0)
+                    views = float(row.get("views") or 0)
+                    likes = float(row.get("likes") or 0)
+                    
+                    # Conversion Rate Boost
+                    cr_boost = 0.0
+                    if views >= 10:
+                        cr = purchases / views
+                        if cr > 0.1: cr_boost = cr * 2.0 # Gran boost si convierte bien
+                        
+                    # Suavizado Bayesiano Simple: C = 20 vistas promedio global, m = 1 compra promedio
+                    C, m = 20.0, 1.0
+                    bayes_purchases = (views * (purchases / (views + 0.1)) + C * m) / (views + C)
+                    
+                    popularity = math.log1p(bayes_purchases * 5.0 + likes * 0.5) / 10.0
+                    affinity = max(0.0, 1.0 - row["distance"])
+                    
+                    row["final_score"] = (affinity * 0.6) + (popularity * 0.2) + cr_boost
+                    env_candidates.append(row)
+                    
+                env_candidates.sort(key=lambda x: x["final_score"], reverse=True)
+                
+                for row in env_candidates:
+                    rid, sid = row["id"], row["storeId"]
+                    if store_counts.get(sid, 0) >= 3: continue
+                    filtered_env.append(row)
+                    global_seen_ids.add(rid)
+                    store_counts[sid] = store_counts.get(sid, 0) + 1
+                    if len(filtered_env) >= 6: break
+                    
+                if len(filtered_env) >= 2:
+                    feed_sections.insert(0, { # Insertar de primero para que destaque
+                        "id": f"dyn_env_{env_anchor_id}",
+                        "type": "products",
+                        "title": env_title,
+                        "subtitle": env_subtitle,
+                        "items": filtered_env
+                    })
         except Exception as e:
-            print(f"[Weather] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            print(f"[Weather/Env Vector] Error: {e}")
                 
     sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
     top_clusters = sorted_clusters[:2]
@@ -1545,6 +1641,7 @@ def get_admin_users_vectors(page: int = 1, limit: int = 10):
         
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
+        current_hour = (now.hour - 5) % 24
         def calc_decay(ts):
             if not ts: return 1.0
             try:
