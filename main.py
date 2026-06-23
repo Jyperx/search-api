@@ -506,10 +506,41 @@ def do_seed_anchors():
             c = conn.cursor()
             c.execute("DELETE FROM anchor_vectors")
             c.execute("DELETE FROM anchor_metadata")
+            
+            # Auto-descubrimiento de categorías orgánicas
+            c.execute("""
+                SELECT category, COUNT(*) as c 
+                FROM search_index 
+                WHERE type='product' AND CAST(available AS INTEGER) = 1 
+                GROUP BY category 
+                ORDER BY c DESC 
+                LIMIT 30
+            """)
+            category_rows = c.fetchall()
+            
             conn.commit()
             conn.close()
+            
+        dynamic_anchors = []
+        import hashlib
+        for i, row in enumerate(category_rows):
+            cat_name = row["category"]
+            if not cat_name or str(cat_name).strip().lower() == "general": continue
+            
+            # Generar un ID único basado en el nombre de la categoría
+            cat_id = "DYN_CAT_" + hashlib.md5(cat_name.encode()).hexdigest()[:8]
+            
+            dynamic_anchors.append({
+                "id": cat_id,
+                "title": f"Lo mejor en {cat_name.title()}",
+                "subtitle": f"Explora nuestra selección de {cat_name.title()}",
+                "desc": f"Productos relacionados con la categoría {cat_name}"
+            })
+            
+        # Combinar anclas orgánicas con las ambientales fijas
+        all_anchors = dynamic_anchors + ENV_ANCHORS
         
-        for a in ANCHORS + ENV_ANCHORS:
+        for a in all_anchors:
             text = f"{a['title']} - {a['desc']}"
             import time
             res = None
@@ -520,6 +551,8 @@ def do_seed_anchors():
                 except Exception as e:
                     print(f"Error in embed_content (attempt {attempt}):", e)
                     time.sleep(2 ** attempt)
+            
+            time.sleep(2) # Evitar saturar la capa gratuita de Gemini
             
             if res and 'embedding' in res:
                 vector_blob = sqlite_vec.serialize_float32(res['embedding'])
@@ -536,7 +569,7 @@ def do_seed_anchors():
                     )
                     conn.commit()
                     conn.close()
-        print("Vectores ancla sembrados en segundo plano exitosamente.")
+        print(f"Vectores ancla dinámicos sembrados ({len(dynamic_anchors)} categorias + {len(ENV_ANCHORS)} ambientales).")
     except Exception as e:
         print("Error seeding anchors en bg:", e)
 
