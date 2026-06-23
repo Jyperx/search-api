@@ -1219,11 +1219,16 @@ def get_system_status():
         return {"status": "error", "error": str(e)}
 
 @app.get("/api/admin/users-vectors")
-def get_admin_users_vectors():
+def get_admin_users_vectors(page: int = 1, limit: int = 10):
     """Devuelve los perfiles vectoriales de los usuarios activos calculando su afinidad actual."""
     try:
         users_ref = db.collection('users')
-        users = users_ref.limit(50).stream()
+        # Paginación básica en Firestore
+        offset = (page - 1) * limit
+        users = users_ref.offset(offset).limit(limit).stream()
+        
+        # Para saber el total aprox
+        total_users = 0 # Firestore count can be slow, but let's assume we return dynamic
         
         results = []
         conn = get_db_connection()
@@ -1286,7 +1291,7 @@ def get_admin_users_vectors():
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/admin/cerebro")
-def get_admin_cerebro():
+def get_admin_cerebro(page: int = 1, limit: int = 10):
     """Devuelve telemetría detallada del Cerebro Vectorial para el panel Admin."""
     try:
         conn = get_db_connection()
@@ -1321,13 +1326,14 @@ def get_admin_cerebro():
                 
             anchors.append(anchor_dict)
         
-        # 3. 10 productos vectorizados
+        # 3. N productos vectorizados (Paginados)
+        offset = (page - 1) * limit
         c.execute("""
             SELECT p.product_id, s.name, s.category, length(p.embedding) as vec_bytes
             FROM product_vectors p
             JOIN search_index s ON p.product_id = s.id AND s.type = 'product'
-            LIMIT 10
-        """)
+            LIMIT ? OFFSET ?
+        """, (limit, offset))
         sample_products = [dict(row) for row in c.fetchall()]
         
         conn.close()
@@ -1339,11 +1345,102 @@ def get_admin_cerebro():
                 "total_product_vectors": total_product_vectors,
                 "anchors_count": len(anchors),
                 "anchors": anchors,
-                "sample_products": sample_products
+                "sample_products": sample_products,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": total_product_vectors
+                }
             }
         }
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/admin/auto-generate-anchors")
+def auto_generate_anchors(background_tasks: BackgroundTasks):
+    def run_generation():
+        try:
+            with sqlite_lock:
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("SELECT DISTINCT category FROM search_index WHERE type='product'")
+                categories = [row['category'] for row in c.fetchall() if row['category']]
+                c.execute("SELECT name, description, category FROM search_index WHERE type='product' ORDER BY RANDOM() LIMIT 100")
+                products = [dict(row) for row in c.fetchall()]
+                conn.close()
+                
+            import json
+            import google.generativeai as genai
+            
+            prompt = f'''
+            Eres un experto en taxonomía de comercio electrónico e inteligencia artificial.
+            Aquí tienes una muestra de los productos y categorías de nuestro supermercado/tienda:
+            Categorías: {categories}
+            Muestra de productos: {products}
+            
+            Tu tarea es generar un arreglo JSON con las mejores "Anclas" (Clústeres o categorías semánticas) para organizar este inventario en un motor de búsqueda vectorial.
+            El arreglo JSON debe contener entre 6 y 12 objetos con la siguiente estructura exacta:
+            [
+              {{
+                "id": "A1",
+                "title": "Título corto y llamativo",
+                "subtitle": "Subtítulo amigable",
+                "desc": "Descripción detallada de los productos exactos que pertenecen aquí. ¡MUY IMPORTANTE! Si hay posibilidad de colisión semántica (ej: comida para perros vs perros calientes), incluye una instrucción de exclusión explícita en mayúsculas al final de la descripción (ej: EXCLUYE comida rápida)."
+              }}
+            ]
+            Devuelve SOLO EL JSON válido, sin código de bloque extra ni markdown.
+            '''
+            model = genai.GenerativeModel("gemini-1.5-flash")
+            response = model.generate_content(prompt)
+            raw_text = response.text.strip()
+            if raw_text.startswith("```json"): raw_text = raw_text[7:]
+            if raw_text.startswith("```"): raw_text = raw_text[3:]
+            if raw_text.endswith("```"): raw_text = raw_text[:-3]
+            
+            anchors_data = json.loads(raw_text.strip())
+            
+            with sqlite_lock:
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("DELETE FROM anchor_vectors")
+                c.execute("DELETE FROM anchor_metadata")
+                conn.commit()
+                conn.close()
+                
+            for a in anchors_data:
+                text = f"{a['title']} - {a['desc']}"
+                import time
+                res = None
+                for attempt in range(3):
+                    try:
+                        res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+                        break
+                    except Exception as e:
+                        time.sleep(2 ** attempt)
+                
+                if res and 'embedding' in res:
+                    vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+                    with sqlite_lock:
+                        conn = get_db_connection()
+                        c = conn.cursor()
+                        c.execute(
+                            "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type) VALUES (?, ?, ?, 'products')",
+                            (a['id'], a['title'], a['subtitle'])
+                        )
+                        c.execute(
+                            "INSERT INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
+                            (a['id'], vector_blob)
+                        )
+                        conn.commit()
+                        conn.close()
+            print("Auto-Generación de Anclas con IA completada exitosamente.")
+        except Exception as e:
+            print("Error en Auto-Generación de Anclas:", e)
+            
+    background_tasks.add_task(run_generation)
+    return {"status": "ok", "message": "Descubrimiento de anclas con IA iniciado en background. Espera un minuto."}
 
 @app.post("/api/admin/reset-vectors")
 def reset_vectors_db():
