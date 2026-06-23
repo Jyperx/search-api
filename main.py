@@ -172,7 +172,7 @@ else:
     SQLITE_DB = 'search_index.db'
 
 genai.configure(api_key=os.getenv("VITE_GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")))
-EMBEDDING_MODEL = "models/text-embedding-004"
+EMBEDDING_MODEL = "models/gemini-embedding-001"
 vector_worker_pool = ThreadPoolExecutor(max_workers=3)
 
 def get_db_connection():
