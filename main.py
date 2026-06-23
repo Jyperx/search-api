@@ -1176,7 +1176,7 @@ def search(q: str = "", category: str = "", history: str = ""):
                 elif raw_stores:
                     best_dist = raw_stores[0]['distance']
 
-                if len(results) == 0 and best_dist > 0.40:
+                if len(results) == 0:
                     exact_match = False
 
                 dynamic_thresh = min(best_dist + 0.15, 0.65)
