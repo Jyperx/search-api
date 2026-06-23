@@ -1392,7 +1392,7 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             ]
             Devuelve SOLO EL JSON válido, sin código de bloque extra ni markdown.
             '''
-            model = genai.GenerativeModel("gemini-1.5-flash")
+            model = genai.GenerativeModel("gemini-pro")
             response = model.generate_content(prompt)
             raw_text = response.text.strip()
             if raw_text.startswith("```json"): raw_text = raw_text[7:]
