@@ -1682,57 +1682,113 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
 
 @app.get("/api/recommendations/{uid}")
 def get_user_recommendations(uid: str):
-    """Obtiene recomendaciones on-demand calculadas en base a la actividad del usuario."""
-    if not db:
-        return get_popular_products()
-        
+    """Obtiene recomendaciones on-demand con vectores, sección nuevos y comercios populares."""
     try:
-        # 1. Analizar actividad reciente del usuario en Firestore (clics, busquedas, vistas)
-        activities = db.collection('users').document(uid).collection('activity').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(50).stream()
-        
-        category_scores = {}
-        for act in activities:
-            data = act.to_dict()
-            cat = data.get('category')
-            if cat and cat != 'General':
-                score = 2 if data.get('type') == 'search' else 1
-                category_scores[cat] = category_scores.get(cat, 0) + score
-                
-        if not category_scores:
-            return get_popular_products() # Fallback si es un usuario nuevo sin clics
+        from datetime import datetime, timezone
+        import time
+        now_ms = time.time() * 1000
+        def calc_decay(ts_iso):
+            return 1.0 # Simple sin decaimiento para simplificar
             
-        top_categories = sorted(category_scores.keys(), key=lambda k: category_scores[k], reverse=True)[:2]
-        
-        # 2. Consultar nuestra base local ultrarrápida (SQLite) para buscar productos de esas categorías
+        activities = []
+        if db:
+            activities_stream = db.collection('users').document(uid).collection('activity').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(50).stream()
+            activities = list(activities_stream)
+            
+        user_vector = calculate_user_vector(activities, calc_decay, current_hour=datetime.now().hour) if activities else None
+
         conn = sqlite3.connect(SQLITE_DB)
         conn.row_factory = sqlite3.Row
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
         c = conn.cursor()
         
-        placeholders = ', '.join('?' for _ in top_categories)
-        query_sql = f"""
+        recommended = []
+        if user_vector:
+            c.execute("""
+                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                       s.name as storeName, vec_distance_cosine(v.embedding, ?) AS distance
+                FROM product_vectors v
+                JOIN search_index p ON p.id = v.product_id AND p.type = 'product'
+                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                ORDER BY distance ASC
+                LIMIT 4
+            """, (user_vector,))
+            recommended = [dict(row) for row in c.fetchall()]
+            
+        if len(recommended) < 4:
+            limit_needed = 4 - len(recommended)
+            existing_ids = [r['id'] for r in recommended]
+            if existing_ids:
+                placeholders = ','.join('?' for _ in existing_ids)
+                query = f"""
+                    SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                           p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                           s.name as storeName
+                    FROM search_index p
+                    LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    WHERE p.type = 'product' AND p.id NOT IN ({placeholders})
+                    ORDER BY CAST(p.likes AS INTEGER) DESC
+                    LIMIT ?
+                """
+                c.execute(query, existing_ids + [limit_needed])
+            else:
+                c.execute("""
+                    SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                           p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                           s.name as storeName
+                    FROM search_index p
+                    LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    WHERE p.type = 'product'
+                    ORDER BY CAST(p.likes AS INTEGER) DESC
+                    LIMIT ?
+                """, (limit_needed,))
+            recommended.extend([dict(row) for row in c.fetchall()])
+            
+        # 2. Explore: Random / Menos populares o diferentes
+        c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                    p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
                    s.name as storeName
             FROM search_index p
             LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-            WHERE p.type = 'product' AND p.category IN ({placeholders})
-            ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
-            LIMIT 6
-        """
-        c.execute(query_sql, top_categories)
-        rows = c.fetchall()
+            WHERE p.type = 'product'
+            ORDER BY RANDOM()
+            LIMIT 4
+        """)
+        explore = [dict(row) for row in c.fetchall()]
+        
+        # 3. Comercios Populares
+        c.execute("""
+            SELECT id as store_id, name, category, description, imageUrl, imageUrl as logoUrl, likes, isOpen as open
+            FROM search_index
+            WHERE type = 'store' AND CAST(isOpen AS INTEGER) = 1
+            ORDER BY CAST(likes AS INTEGER) DESC
+            LIMIT 3
+        """)
+        stores_rows = c.fetchall()
+        popular_stores = []
+        for raw_row in stores_rows:
+            row = dict(raw_row)
+            likes_val = int(row["likes"] or 0)
+            row["rating"] = round(min(5.0, 4.0 + (likes_val / 100)), 1)
+            row["time"] = "15-25 min"
+            row["deliveryFee"] = 0
+            row["type"] = "store"
+            row["id"] = row["store_id"]
+            popular_stores.append(row)
+
         conn.close()
-        
-        results = [dict(row) for row in rows]
-        
-        if len(results) < 3:
-            # Si no hay suficientes productos, completamos con los más populares
-            return get_popular_products()
-            
-        return {"results": results}
+        return {
+            "recommended": recommended,
+            "explore": explore,
+            "stores": popular_stores
+        }
     except Exception as e:
-        print(f"Error generando recomendaciones para {uid}:", e)
-        return get_popular_products()
+        print(f"Error generando recomendaciones API estructuradas para {uid}:", e)
+        return {"recommended": [], "explore": [], "stores": []}
 
 @app.get("/api/status")
 def get_system_status():
