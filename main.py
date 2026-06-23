@@ -461,6 +461,8 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour
             
     if total_weight > 0:
         user_vector = user_vector / total_weight
+        # Devolvemos la lista de floats (no bytes) para poder mezclarla luego si es necesario, 
+        # o devolvemos serializado. Mejor devolvemos serializado, pero añadiremos un param.
         return sqlite_vec.serialize_float32(user_vector.tolist())
     return None
 
@@ -898,7 +900,7 @@ def build_cluster_fts_query(cluster_name, c_val, include_cluster_name=True):
 @app.get("/api/search")
 def search(q: str = "", category: str = "", history: str = ""):
     """Busca en el índice FTS5 y Vectorial con Soporte para Categorías y Perfil de Usuario."""
-    conn = sqlite3.connect(SQLITE_DB)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -1048,11 +1050,14 @@ def search(q: str = "", category: str = "", history: str = ""):
                                     return 1.0
                                 except: return 1.0
                             
-                            user_vector = calculate_user_vector(activities, calc_decay, current_hour=datetime.now().hour)
-                            if user_vector:
+                            user_vector_bytes = calculate_user_vector(activities, calc_decay, current_hour=datetime.now().hour)
+                            if user_vector_bytes:
                                 # Fusión de Vectores: 70% Búsqueda Actual, 30% Historial de Usuario
+                                # user_vector_bytes is bytes, we need to unpack to float32
+                                import struct
+                                u_v_floats = struct.unpack(f"{len(raw_query_vector)}f", user_vector_bytes)
                                 query_vector = sqlite_vec.serialize_float32(
-                                    [q_v * 0.7 + u_v * 0.3 for q_v, u_v in zip(raw_query_vector, user_vector)]
+                                    [q_v * 0.7 + u_v * 0.3 for q_v, u_v in zip(raw_query_vector, u_v_floats)]
                                 )
                             else:
                                 query_vector = sqlite_vec.serialize_float32(raw_query_vector)
