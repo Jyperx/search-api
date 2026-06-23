@@ -2537,6 +2537,7 @@ def reset_vectors_db():
             conn = get_db_connection()
             c = conn.cursor()
             c.execute("DROP TABLE IF EXISTS product_vectors")
+            c.execute("DROP TABLE IF EXISTS store_vectors")
             c.execute("DROP TABLE IF EXISTS anchor_vectors")
             c.execute("DELETE FROM anchor_metadata")
             conn.commit()
@@ -2544,6 +2545,28 @@ def reset_vectors_db():
         
         init_db()
         return {"status": "ok", "message": "Vectores limpiados correctamente."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/admin/reset-users-activity")
+def reset_users_activity():
+    if not db:
+        raise HTTPException(status_code=500, detail="Firebase no está inicializado.")
+    try:
+        users_ref = db.collection('users')
+        users = users_ref.stream()
+        batch = db.batch()
+        count = 0
+        for doc in users:
+            batch.update(doc.reference, {"recent_activity": []})
+            count += 1
+            if count >= 400: # Firestore limit
+                batch.commit()
+                batch = db.batch()
+                count = 0
+        if count > 0:
+            batch.commit()
+        return {"status": "ok", "message": "Historial de actividad limpiado para todos los usuarios."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
