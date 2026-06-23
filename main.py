@@ -172,7 +172,7 @@ else:
     SQLITE_DB = 'search_index.db'
 
 genai.configure(api_key=os.getenv("VITE_GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")))
-EMBEDDING_MODEL = "models/gemini-embedding-001"
+EMBEDDING_MODEL = "models/text-embedding-004"
 vector_worker_pool = ThreadPoolExecutor(max_workers=3)
 
 def get_db_connection():
@@ -258,7 +258,7 @@ def init_db():
 init_db()
 
 def generate_product_embedding(name, category, description):
-    text = f"{name}. Categoría: {category}. {description}"
+    text = f"Producto a la venta: {name}. Categoría principal del comercio o producto: {category}. Descripción: {description}. (NOTA: Si es comida, pertenece a restaurante/cafetería, NO a mascotas)."
     import time
     for attempt in range(3):
         try:
@@ -1256,9 +1256,7 @@ def get_admin_users_vectors():
         for u in users:
             uid = u.id
             udata = u.to_dict()
-            # Consultar subcolección de actividad real
-            activities_ref = db.collection('users').document(uid).collection('activity').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(10).stream()
-            recent_activity = [act.to_dict() for act in activities_ref]
+            recent_activity = udata.get('recent_activity', [])
             
             user_vector = calculate_user_vector(recent_activity, calc_decay)
             anchors = []
