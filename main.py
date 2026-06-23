@@ -267,6 +267,13 @@ def init_db():
     ''')
     
     c.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS store_vectors USING vec0(
+            store_id TEXT PRIMARY KEY,
+            embedding float[3072]
+        )
+    ''')
+    
+    c.execute('''
         CREATE TABLE IF NOT EXISTS anchor_metadata (
             anchor_id TEXT PRIMARY KEY,
             title TEXT,
@@ -343,6 +350,30 @@ def async_index_product_vector(p_id, name, category, description):
                 conn.close()
         except Exception as e:
             print(f"Error guardando vector: {e}")
+
+def async_index_store_vector(s_id, name, category, description, products_summary):
+    text = f"Comercio: {name}. Categoría: {category}. Descripción: {description}. Productos principales que vende: {products_summary}."
+    import time
+    vector_bytes = None
+    for attempt in range(3):
+        try:
+            res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+            vector_bytes = sqlite_vec.serialize_float32(res['embedding'])
+            break
+        except Exception as e:
+            time.sleep(2 ** attempt)
+            
+    if vector_bytes:
+        try:
+            with sqlite_lock:
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("DELETE FROM store_vectors WHERE store_id = ?", (s_id,))
+                c.execute("INSERT INTO store_vectors (store_id, embedding) VALUES (?, ?)", (s_id, vector_bytes))
+                conn.commit()
+                conn.close()
+        except Exception as e:
+            print(f"Error guardando vector de tienda: {e}")
 
 def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour=None):
     product_ids = []
@@ -532,9 +563,9 @@ def do_seed_anchors():
             
             dynamic_anchors.append({
                 "id": cat_id,
-                "title": f"Lo mejor en {cat_name.title()}",
-                "subtitle": f"Explora nuestra selección de {cat_name.title()}",
-                "desc": f"Productos relacionados con la categoría {cat_name}"
+                "title": f"Todo en {cat_name.title()}",
+                "subtitle": f"Tus favoritos de {cat_name.lower()}",
+                "desc": f"Catálogo completo de {cat_name.lower()} y similares."
             })
             
         # Combinar anclas orgánicas con las ambientales fijas
@@ -683,6 +714,7 @@ def sync_database():
             with sqlite_lock:
                 conn = get_db_connection()
                 c = conn.cursor()
+                store_product_names = []
                 for product in products:
                     p_data = product.to_dict()
                     c.execute("""
@@ -705,6 +737,7 @@ def sync_database():
                             ))
                     count += 1
                     if p_data.get('available', True):
+                        store_product_names.append(p_data.get('name', ''))
                         vector_worker_pool.submit(
                             async_index_product_vector, 
                             product.id, 
@@ -714,6 +747,10 @@ def sync_database():
                         )
                 conn.commit()
                 conn.close()
+                
+            # Vectorizar el comercio con sus productos
+            products_summary = ", ".join(store_product_names[:10])
+            vector_worker_pool.submit(async_index_store_vector, s_id, s_data.get('name', ''), s_data.get('category', ''), s_data.get('description', ''), products_summary)
         
         return {"message": "Sincronización exitosa", "items_indexed": count}
     except Exception as e:
@@ -754,6 +791,7 @@ def sync_store(store_id: str):
             
             # 3. Leer Productos
             products_ref = store_ref.collection("products")
+            store_product_names = []
             for product in products_ref.stream():
                 p_data = product.to_dict()
                 c.execute("""
@@ -775,9 +813,22 @@ def sync_store(store_id: str):
                             1 if p_data.get('available', True) else 0
                         ))
                 count += 1
+                if p_data.get('available', True):
+                    store_product_names.append(p_data.get('name', ''))
+                    vector_worker_pool.submit(
+                        async_index_product_vector, 
+                        product.id, 
+                        p_data.get('name', ''), 
+                        p_data.get('category', ''), 
+                        p_data.get('description', '')
+                    )
 
         conn.commit()
         conn.close()
+        
+        products_summary = ", ".join(store_product_names[:10])
+        vector_worker_pool.submit(async_index_store_vector, store_id, s_data.get('name', ''), s_data.get('category', ''), s_data.get('description', ''), products_summary)
+        
         return {"message": f"Comercio {store_id} sincronizado", "items_indexed": count}
 
 def build_cluster_fts_query(cluster_name, c_val, include_cluster_name=True):
@@ -1561,6 +1612,47 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 })
         except Exception as e:
             print(f"[FTS Fallback] Error en cluster {cluster}: {e}")
+
+    # 6. Tiendas Recomendadas (Vector Search sobre Comercios)
+    try:
+        if user_vector:
+            c.execute("""
+                SELECT s.store_id, vec_distance_cosine(s.embedding, ?) AS distance,
+                       st.name, st.category, st.description, st.imageUrl, st.likes, st.isOpen
+                FROM store_vectors s
+                JOIN search_index st ON st.id = s.store_id AND st.type = 'store'
+                WHERE CAST(st.isOpen AS INTEGER) = 1
+                ORDER BY distance ASC
+                LIMIT 5
+            """, (user_vector,))
+            
+            store_rows = c.fetchall()
+            recommended_stores = []
+            for raw_row in store_rows:
+                row = dict(raw_row)
+                if row["distance"] < 0.8:
+                    recommended_stores.append({
+                        "id": row["store_id"],
+                        "name": row["name"],
+                        "category": row["category"],
+                        "description": row["description"],
+                        "imageUrl": row["imageUrl"],
+                        "likes": row["likes"],
+                        "type": "store"
+                    })
+                    
+            if recommended_stores:
+                # Insertar en la posicion 2 o al final si es corto
+                insert_pos = min(2, len(feed_sections))
+                feed_sections.insert(insert_pos, {
+                    "id": "dyn_recommended_stores",
+                    "type": "stores", # El frontend detecta type='stores'
+                    "title": "Comercios para ti",
+                    "subtitle": "Basado en tus gustos",
+                    "items": recommended_stores
+                })
+    except Exception as e:
+        print(f"[Stores Vector] Error: {e}")
 
     conn.close()
     return {"sections": feed_sections}
