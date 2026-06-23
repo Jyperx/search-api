@@ -1623,23 +1623,35 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 JOIN search_index st ON st.id = s.store_id AND st.type = 'store'
                 WHERE CAST(st.isOpen AS INTEGER) = 1
                 ORDER BY distance ASC
-                LIMIT 5
+                LIMIT 30
             """, (user_vector,))
             
             store_rows = c.fetchall()
+            category_counts = {}
             recommended_stores = []
+            
             for raw_row in store_rows:
                 row = dict(raw_row)
-                if row["distance"] < 0.8:
-                    recommended_stores.append({
-                        "id": row["store_id"],
-                        "name": row["name"],
-                        "category": row["category"],
-                        "description": row["description"],
-                        "imageUrl": row["imageUrl"],
-                        "likes": row["likes"],
-                        "type": "store"
-                    })
+                if row["distance"] < 0.85: # Un poco más de tolerancia para llenar las categorías
+                    cat = row["category"]
+                    if category_counts.get(cat, 0) < 3:
+                        likes_val = int(row["likes"] or 0)
+                        rating_val = round(min(5.0, 4.0 + (likes_val / 100)), 1)
+                        recommended_stores.append({
+                            "id": row["store_id"],
+                            "name": row["name"],
+                            "category": cat,
+                            "description": row["description"],
+                            "imageUrl": row["imageUrl"],
+                            "logoUrl": row["imageUrl"], # El frontend usa logoUrl en HomeStoreCard
+                            "likes": likes_val,
+                            "time": "15-25 min",
+                            "rating": rating_val,
+                            "deliveryFee": 0,
+                            "open": True,
+                            "type": "store"
+                        })
+                        category_counts[cat] = category_counts.get(cat, 0) + 1
                     
             if recommended_stores:
                 # Insertar en la posicion 2 o al final si es corto
