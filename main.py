@@ -1003,6 +1003,8 @@ def search(q: str = "", category: str = "", history: str = ""):
         rows = c.fetchall()
         results = [dict(row) for row in rows]
         
+        exact_match = True
+        
         # FALLBACK 1: LIKE Substring match (ideal para fragmentos como "ur" en "burguer")
         if len(results) == 0 and len(safe_q) >= 2:
             like_q = f"%{safe_q}%"
@@ -1017,7 +1019,7 @@ def search(q: str = "", category: str = "", history: str = ""):
                     (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
                     (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
                     (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
-                    (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 100) ELSE 0 END) +
+                    (CASE WHEN COALESCE(CAST(p.views AS INTEGER), 0) < 50 THEN ABS(RANDOM() % 300) ELSE 0 END) +
                     ABS(RANDOM() % 20) DESC
                 LIMIT 50
             """, (like_q, like_q, like_q))
@@ -1083,9 +1085,9 @@ def search(q: str = "", category: str = "", history: str = ""):
                     JOIN search_index p ON p.id = v.product_id
                     LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
                     ORDER BY distance ASC
-                    LIMIT 15
+                    LIMIT 20
                 """, (query_vector,))
-                vec_products = [dict(row) for row in c.fetchall() if row['distance'] <= 0.52]
+                raw_products = [dict(row) for row in c.fetchall()]
                 
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
@@ -1095,9 +1097,26 @@ def search(q: str = "", category: str = "", history: str = ""):
                     JOIN search_index p ON p.id = v.store_id
                     LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
                     ORDER BY distance ASC
-                    LIMIT 5
+                    LIMIT 10
                 """, (query_vector,))
-                vec_stores = [dict(row) for row in c.fetchall() if row['distance'] <= 0.55]
+                raw_stores = [dict(row) for row in c.fetchall()]
+
+                # Dynamic Threshold Logic
+                best_dist = 1.0
+                if raw_products and raw_stores:
+                    best_dist = min(raw_products[0]['distance'], raw_stores[0]['distance'])
+                elif raw_products:
+                    best_dist = raw_products[0]['distance']
+                elif raw_stores:
+                    best_dist = raw_stores[0]['distance']
+
+                if len(results) == 0 and best_dist > 0.40:
+                    exact_match = False
+
+                dynamic_thresh = min(best_dist + 0.15, 0.65)
+                
+                vec_products = [r for r in raw_products if r['distance'] <= dynamic_thresh]
+                vec_stores = [r for r in raw_stores if r['distance'] <= dynamic_thresh]
                 
                 vec_all = vec_stores + vec_products
                 vec_all.sort(key=lambda x: x['distance'])
@@ -1121,7 +1140,7 @@ def search(q: str = "", category: str = "", history: str = ""):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return {"error": str(e), "traceback": traceback.format_exc(), "results": []}
+        return {"error": str(e), "traceback": traceback.format_exc(), "results": [], "exact_match": False}
     finally:
         conn.close()
     
@@ -1129,7 +1148,7 @@ def search(q: str = "", category: str = "", history: str = ""):
         # Enforce category filter if both text query and category tab are used
         results = [r for r in results if r.get('category') == category or r.get('storeName') == category or r.get('storeCategory') == category]
     
-    return {"results": results}
+    return {"results": results, "exact_match": exact_match}
 
 @app.get("/api/popular")
 def get_popular_products():
