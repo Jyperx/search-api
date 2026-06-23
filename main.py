@@ -1052,12 +1052,12 @@ def search(q: str = "", category: str = "", history: str = ""):
                             
                             user_vector_bytes = calculate_user_vector(activities, calc_decay, current_hour=datetime.now().hour)
                             if user_vector_bytes:
-                                # Fusión de Vectores: 70% Búsqueda Actual, 30% Historial de Usuario
-                                # user_vector_bytes is bytes, we need to unpack to float32
+                                # Fusión de Vectores: 85% Búsqueda Actual, 15% Historial de Usuario
+                                # Para que el historial no sobre-escriba la búsqueda explícita
                                 import struct
                                 u_v_floats = struct.unpack(f"{len(raw_query_vector)}f", user_vector_bytes)
                                 query_vector = sqlite_vec.serialize_float32(
-                                    [q_v * 0.7 + u_v * 0.3 for q_v, u_v in zip(raw_query_vector, u_v_floats)]
+                                    [q_v * 0.85 + u_v * 0.15 for q_v, u_v in zip(raw_query_vector, u_v_floats)]
                                 )
                             else:
                                 query_vector = sqlite_vec.serialize_float32(raw_query_vector)
@@ -1081,7 +1081,7 @@ def search(q: str = "", category: str = "", history: str = ""):
                     ORDER BY distance ASC
                     LIMIT 15
                 """, (query_vector,))
-                vec_products = [dict(row) for row in c.fetchall()]
+                vec_products = [dict(row) for row in c.fetchall() if row['distance'] <= 0.75]
                 
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
@@ -1093,7 +1093,7 @@ def search(q: str = "", category: str = "", history: str = ""):
                     ORDER BY distance ASC
                     LIMIT 5
                 """, (query_vector,))
-                vec_stores = [dict(row) for row in c.fetchall()]
+                vec_stores = [dict(row) for row in c.fetchall() if row['distance'] <= 0.75]
                 
                 vec_all = vec_stores + vec_products
                 vec_all.sort(key=lambda x: x['distance'])
