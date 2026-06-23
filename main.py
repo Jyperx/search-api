@@ -1760,7 +1760,20 @@ def get_user_recommendations(uid: str):
         """)
         explore = [dict(row) for row in c.fetchall()]
         
-        # 3. Comercios Populares
+        # 3. Best Sellers: Compras en furor
+        c.execute("""
+            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                   s.name as storeName
+            FROM search_index p
+            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+            WHERE p.type = 'product'
+            ORDER BY CAST(p.purchases AS INTEGER) DESC, CAST(p.likes AS INTEGER) DESC
+            LIMIT 4
+        """)
+        best_sellers = [dict(row) for row in c.fetchall()]
+
+        # 4. Comercios Populares
         c.execute("""
             SELECT id as store_id, name, category, description, imageUrl, imageUrl as logoUrl, likes, isOpen as open
             FROM search_index
@@ -1784,11 +1797,12 @@ def get_user_recommendations(uid: str):
         return {
             "recommended": recommended,
             "explore": explore,
+            "best_sellers": best_sellers,
             "stores": popular_stores
         }
     except Exception as e:
         print(f"Error generando recomendaciones API estructuradas para {uid}:", e)
-        return {"recommended": [], "explore": [], "stores": []}
+        return {"recommended": [], "explore": [], "best_sellers": [], "stores": []}
 
 @app.get("/api/status")
 def get_system_status():
