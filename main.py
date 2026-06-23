@@ -1085,7 +1085,7 @@ def search(q: str = "", category: str = "", history: str = ""):
                     ORDER BY distance ASC
                     LIMIT 15
                 """, (query_vector,))
-                vec_products = [dict(row) for row in c.fetchall() if row['distance'] <= 0.60]
+                vec_products = [dict(row) for row in c.fetchall() if row['distance'] <= 0.40]
                 
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
@@ -1097,7 +1097,7 @@ def search(q: str = "", category: str = "", history: str = ""):
                     ORDER BY distance ASC
                     LIMIT 5
                 """, (query_vector,))
-                vec_stores = [dict(row) for row in c.fetchall() if row['distance'] <= 0.65]
+                vec_stores = [dict(row) for row in c.fetchall() if row['distance'] <= 0.45]
                 
                 vec_all = vec_stores + vec_products
                 vec_all.sort(key=lambda x: x['distance'])
