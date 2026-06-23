@@ -2440,9 +2440,11 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                             (a['id'], vector_blob)
                         )
                         conn.commit()
-                        conn.commit()
                         conn.close()
+                global_sync_state["completed_products"] += 1
+                        
             print("[Fase 1] Auto-Generación de Anclas con IA completada exitosamente.")
+            global_sync_state["status"] = "Generando clusters ambientales..."
             
             # --- FASE 2: CLUSTERS AMBIENTALES/FTS ---
             prompt_macro = f'''
@@ -2517,8 +2519,13 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                     }, merge=True)
                     print("[Fase 2] Clusters Ambientales generados y sincronizados en Firebase.")
             
+            global_sync_state["status"] = "Completado"
+            
         except Exception as e:
             print("Error en Auto-Generación (Fase 1/2):", e)
+            global_sync_state["status"] = f"Error: {str(e)}"
+        finally:
+            global_sync_state["is_syncing"] = False
             
     background_tasks.add_task(run_generation)
     return {"status": "ok", "message": "Descubrimiento de anclas con IA iniciado en background. Espera un minuto."}
