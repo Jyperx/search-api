@@ -907,7 +907,7 @@ def simulate_home_feed(req: SimulateRequest):
                 })
                 
         conn.close()
-        return feed_sections
+        return {"results": feed_sections}
     except Exception as e:
         import traceback
         traceback.print_exc()
