@@ -887,6 +887,8 @@ def simulate_home_feed(req: SimulateRequest):
             
             items = []
             for row in raw_items:
+                if row["distance"] > 0.8: # Umbral de similitud (evitar productos basura)
+                    continue
                 items.append({
                     "id": row["product_id"],
                     "name": row["name"],
@@ -1011,6 +1013,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             filtered_items = []
             
             for row in raw_items:
+                if row["distance"] > 0.8: # Evitar cross-contamination de clusters
+                    continue
                 rid = row["id"]
                 sid = row["storeId"]
                 if rid in global_seen_ids: continue
@@ -1250,8 +1254,11 @@ def get_admin_users_vectors():
             except: return 1.0
 
         for u in users:
+            uid = u.id
             udata = u.to_dict()
-            recent_activity = udata.get('recent_activity', [])
+            # Consultar subcolección de actividad real
+            activities_ref = db.collection('users').document(uid).collection('activity').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(10).stream()
+            recent_activity = [act.to_dict() for act in activities_ref]
             
             user_vector = calculate_user_vector(recent_activity, calc_decay)
             anchors = []
@@ -1339,6 +1346,20 @@ def get_admin_cerebro():
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/admin/reset-vectors")
+def reset_vectors_db():
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM product_vectors")
+            c.execute("DELETE FROM anchor_vectors")
+            conn.commit()
+            conn.close()
+        return {"status": "ok", "message": "Vectores limpiados correctamente."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/api/reset-clusters")
 def reset_clusters_to_defaults():
