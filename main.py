@@ -329,16 +329,33 @@ init_db()
 def generate_product_embedding(name, category, description):
     intent_str = ""
     cat_lower = str(category).lower()
-    if cat_lower in ["restaurante", "comida rápida", "comidas", "café", "postres"]:
-        intent_str = " [Ideal para: tengo hambre, almuerzo, cena, comida, antojo, tengo sed, delicioso]"
-    elif cat_lower in ["tecnología", "electrónicos", "celulares"]:
-        intent_str = " [Ideal para: regalar, tecnología, computadora, teléfono, electrónico, gadgets]"
-    elif cat_lower in ["mascotas", "veterinaria", "pet shop"]:
-        intent_str = " [Ideal para: mascota, perro, gato, animal, peludo]"
-    elif cat_lower in ["farmacia", "droguería"]:
-        intent_str = " [Ideal para: salud, enfermo, medicamentos, dolor, gripa, curar, botiquín]"
-    elif cat_lower in ["ropa", "moda", "boutique", "calzado"]:
-        intent_str = " [Ideal para: vestir, ropa nueva, estrenar, estilo, moda]"
+    name_desc = (str(name) + " " + str(description)).lower()
+    
+    # 1. Bebidas y Sed
+    if any(k in name_desc for k in ["jugo", "gaseosa", "cerveza", "limonada", "bebida", "agua", "licor", "trago", "soda", "refresco", "vino"]):
+        intent_str += " [Ideal para: tengo sed, refrescante, sed, para beber, calor]"
+    # 2. Antojos y Dulces
+    elif any(k in name_desc for k in ["helado", "postre", "galleta", "brownie", "pastel", "dulce", "torta", "chocolate", "crepa", "waffle"]):
+        intent_str += " [Ideal para: antojo dulce, postre, azúcar, pecar, algo dulce]"
+    # 3. Comida Fuerte / Hambre
+    elif any(k in name_desc for k in ["carne", "pollo", "pizza", "hamburguesa", "almuerzo", "cena", "sopa", "bandeja", "corrientazo", "churrasco", "perro", "salchipapa", "comida", "pescado"]):
+        intent_str += " [Ideal para: tengo mucha hambre, comida fuerte, almuerzo, cena, llenar el estómago]"
+    # 4. Comida Rápida / Snacks
+    elif any(k in name_desc for k in ["empanada", "arepa", "buñuelo", "pandebono", "pastelito", "dedito", "pan"]):
+        intent_str += " [Ideal para: desayuno, algo ligero, merienda, panadería]"
+        
+    # Categorías Fallback (por si acaso el nombre es raro pero la categoría aporta info)
+    if not intent_str:
+        if cat_lower in ["tecnología", "electrónicos", "celulares"]:
+            intent_str = " [Ideal para: regalar, tecnología, computadora, teléfono, electrónico, gadgets]"
+        elif cat_lower in ["mascotas", "veterinaria", "pet shop"]:
+            intent_str = " [Ideal para: mascota, perro, gato, animal, peludo]"
+        elif cat_lower in ["farmacia", "droguería"]:
+            intent_str = " [Ideal para: salud, enfermo, medicamentos, dolor, gripa, curar, botiquín, me siento mal]"
+        elif cat_lower in ["ropa", "moda", "boutique", "calzado"]:
+            intent_str = " [Ideal para: vestir, ropa nueva, estrenar, estilo, moda]"
+        elif cat_lower in ["floristeria", "regalos", "anchetas"]:
+            intent_str = " [Ideal para: regalar, fecha especial, aniversario, detalle, amor]"
 
     text = f"Producto a la venta: {name}. Categoría principal: {category}. Descripción: {description}. {intent_str}"
     import time
