@@ -2260,6 +2260,11 @@ def get_admin_cerebro(page: int = 1, store_page: int = 1, limit: int = 10):
 @app.post("/api/admin/auto-generate-anchors")
 def auto_generate_anchors(background_tasks: BackgroundTasks):
     def run_generation():
+        global global_sync_state
+        global_sync_state["is_syncing"] = True
+        global_sync_state["total_products"] = 0
+        global_sync_state["completed_products"] = 0
+        global_sync_state["status"] = "Analizando taxonomía con Gemini..."
         try:
             with sqlite_lock:
                 conn = get_db_connection()
@@ -2317,6 +2322,8 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             if raw_text.endswith("```"): raw_text = raw_text[:-3]
             
             anchors_data = json.loads(raw_text.strip())
+            global_sync_state["total_products"] = len(anchors_data)
+            global_sync_state["status"] = "Vectorizando anclas..."
             
             with sqlite_lock:
                 conn = get_db_connection()
