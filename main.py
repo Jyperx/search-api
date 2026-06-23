@@ -232,6 +232,10 @@ def init_db():
         c.execute("ALTER TABLE anchor_metadata ADD COLUMN exclude_rules TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        c.execute("ALTER TABLE anchor_metadata ADD COLUMN allowed_categories TEXT")
+    except sqlite3.OperationalError:
+        pass
     
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS anchor_vectors USING vec0(
@@ -865,7 +869,7 @@ def simulate_home_feed(req: SimulateRequest):
         
         # 2. Buscar las 3 anclas más afines al prompt
         c.execute("""
-            SELECT a.anchor_id, m.title, m.subtitle, m.exclude_rules, vec_distance_cosine(a.embedding, ?) AS distance
+            SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, vec_distance_cosine(a.embedding, ?) AS distance
             FROM anchor_vectors a
             JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
             ORDER BY distance ASC
@@ -890,6 +894,11 @@ def simulate_home_feed(req: SimulateRequest):
             raw_items = c.fetchall()
             
             import json
+            allowed_categories = []
+            if anchor.get("allowed_categories"):
+                try: allowed_categories = [cat.lower() for cat in json.loads(anchor["allowed_categories"])]
+                except: pass
+                
             exclude_rules = []
             if anchor.get("exclude_rules"):
                 try: exclude_rules = json.loads(anchor["exclude_rules"])
@@ -900,8 +909,13 @@ def simulate_home_feed(req: SimulateRequest):
                 if row["distance"] > 0.8: # Umbral de similitud
                     continue
                 
+                cat = str(row.get("category", "")).lower()
+                # Positive Mapping Filter
+                if allowed_categories and cat not in allowed_categories:
+                    continue
+                
                 # FILTRO INFALIBLE: Negativas
-                name_cat = (str(row.get("name", "")) + " " + str(row.get("category", ""))).lower()
+                name_cat = (str(row.get("name", "")) + " " + cat).lower()
                 is_excluded = False
                 for rule in exclude_rules:
                     if rule and rule.lower() in name_cat:
@@ -986,7 +1000,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
     if user_vector:
         try:
             c.execute("""
-                SELECT a.anchor_id, m.title, m.subtitle, m.exclude_rules, vec_distance_cosine(a.embedding, ?) AS distance
+                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, vec_distance_cosine(a.embedding, ?) AS distance
                 FROM anchor_vectors a
                 JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
                 ORDER BY distance ASC
@@ -999,7 +1013,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         try:
             # Para usuarios nuevos sin actividades, elegimos 2 anclas semánticas al azar para que exploren
             c.execute("""
-                SELECT a.anchor_id, m.title, m.subtitle, m.exclude_rules
+                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules
                 FROM anchor_vectors a
                 JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
                 ORDER BY RANDOM()
@@ -1032,6 +1046,11 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             raw_items = c.fetchall()
             
             import json
+            allowed_categories = []
+            if anchor.get("allowed_categories"):
+                try: allowed_categories = [cat.lower() for cat in json.loads(anchor["allowed_categories"])]
+                except: pass
+                
             exclude_rules = []
             if anchor.get("exclude_rules"):
                 try: exclude_rules = json.loads(anchor["exclude_rules"])
@@ -1043,9 +1062,14 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             for row in raw_items:
                 if row["distance"] > 0.8: # Evitar cross-contamination de clusters
                     continue
+                
+                cat = str(row.get("category", "")).lower()
+                # Positive Mapping Filter
+                if allowed_categories and cat not in allowed_categories:
+                    continue
                     
                 # FILTRO INFALIBLE: Negativas
-                name_cat = (str(row.get("name", "")) + " " + str(row.get("category", ""))).lower()
+                name_cat = (str(row.get("name", "")) + " " + cat).lower()
                 is_excluded = False
                 for rule in exclude_rules:
                     if rule and rule.lower() in name_cat:
@@ -1065,21 +1089,18 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 if len(filtered_items) >= 5:
                     break
                     
-            # Fallback de Anclas: Si no consigue al menos 2 productos, descartamos y probamos la siguiente ancla.
+            # Fallback de Anclas: Añadimos todas las que tengan suficientes productos.
             if len(filtered_items) >= 2:
-                vectorial_section = {
+                feed_sections.append({
                     "id": f"dyn_vector_{anchor['anchor_id']}",
                     "type": "products",
                     "title": anchor["title"],
                     "subtitle": anchor["subtitle"],
                     "items": filtered_items
-                }
-                break # Encontramos una sección válida, salimos del bucle.
+                })
         except Exception as e:
             print(f"[Cruce 2] Error obteniendo productos para ancla {anchor['anchor_id']}: {e}")
 
-    if vectorial_section:
-        feed_sections.append(vectorial_section)
         
     # 4. Fallback Léxico (FTS5) - MACRO_CLUSTERS_CACHE
     cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
@@ -1426,10 +1447,12 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                 "title": "Mascotas",
                 "subtitle": "Para tus peludos",
                 "desc": "Alimentos y accesorios para mascotas",
-                "exclude_rules": ["perro caliente", "salchicha", "comida rápida", "hot dog"]
+                "allowed_categories": ["Mascotas", "Veterinaria", "Animales"],
+                "exclude_rules": ["perro caliente", "salchicha"]
               }}
             ]
-            En "exclude_rules", incluye un arreglo estricto de strings (palabras clave o frases cortas) que NUNCA deben aparecer en los productos de esta categoría (para evitar colisiones vectoriales estúpidas, como "perro caliente" apareciendo en "mascotas"). Si no hay exclusiones obvias, déjalo vacío [].
+            En "allowed_categories", debes poner un arreglo de strings seleccionando EXACTAMENTE los nombres de las categorías proporcionadas en la lista 'Categorías' que pertenecen a esta ancla. ESTO ES UN FILTRO ESTRICTO. Solo los productos de estas categorías aparecerán en esta ancla. ¡Sé exhaustivo e incluye todas las categorías relevantes de la lista!
+            En "exclude_rules", incluye un arreglo de palabras clave que NO deben aparecer (por si hay ambigüedad).
             Devuelve SOLO EL JSON válido, sin código de bloque extra ni markdown.
             '''
             models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
@@ -1479,8 +1502,8 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                         conn = get_db_connection()
                         c = conn.cursor()
                         c.execute(
-                            "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type, exclude_rules) VALUES (?, ?, ?, 'products', ?)",
-                            (a['id'], a['title'], a['subtitle'], json.dumps(a.get('exclude_rules', [])))
+                            "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type, allowed_categories, exclude_rules) VALUES (?, ?, ?, 'products', ?, ?)",
+                            (a['id'], a['title'], a['subtitle'], json.dumps(a.get('allowed_categories', [])), json.dumps(a.get('exclude_rules', [])))
                         )
                         c.execute(
                             "INSERT INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
