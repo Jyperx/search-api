@@ -272,6 +272,10 @@ def init_db():
         c.execute("ALTER TABLE anchor_metadata ADD COLUMN titles TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        c.execute("ALTER TABLE anchor_metadata ADD COLUMN is_manual INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
     
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS anchor_vectors USING vec0(
@@ -891,6 +895,14 @@ class HomeFeedRequest(BaseModel):
     lat: float = None
     lng: float = None
 
+class ManualAnchorRequest(BaseModel):
+    title: str
+    subtitle: str
+    desc: str
+    allowed_categories: List[str] = []
+    exclude_rules: List[str] = []
+    titles: List[str] = []
+
 class SimulateRequest(BaseModel):
     prompt: str
 
@@ -1505,6 +1517,94 @@ def get_admin_users_vectors(page: int = 1, limit: int = 10):
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
+@app.post("/api/admin/cerebro/anchors")
+def create_manual_anchor(req: ManualAnchorRequest):
+    try:
+        import uuid
+        anchor_id = "M" + str(uuid.uuid4()).replace("-", "")[:8]
+        primary_title = req.titles[0] if req.titles else req.title
+        text = f"{primary_title} - {req.desc}"
+        
+        import time
+        res = None
+        for attempt in range(3):
+            try:
+                res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+                break
+            except Exception as e:
+                time.sleep(1)
+                
+        if not res or 'embedding' not in res:
+            return {"status": "error", "message": "Failed to generate embedding"}
+            
+        vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+        with sqlite_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute(
+                "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type, allowed_categories, exclude_rules, titles, is_manual) VALUES (?, ?, ?, 'products', ?, ?, ?, 1)",
+                (anchor_id, primary_title, req.subtitle, json.dumps(req.allowed_categories), json.dumps(req.exclude_rules), json.dumps(req.titles))
+            )
+            c.execute(
+                "INSERT INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
+                (anchor_id, vector_blob)
+            )
+            conn.commit()
+            conn.close()
+        return {"status": "ok", "anchor_id": anchor_id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.put("/api/admin/cerebro/anchors/{anchor_id}")
+def update_manual_anchor(anchor_id: str, req: ManualAnchorRequest):
+    try:
+        primary_title = req.titles[0] if req.titles else req.title
+        text = f"{primary_title} - {req.desc}"
+        
+        import time
+        res = None
+        for attempt in range(3):
+            try:
+                res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+                break
+            except Exception as e:
+                time.sleep(1)
+                
+        if not res or 'embedding' not in res:
+            return {"status": "error", "message": "Failed to generate embedding"}
+            
+        vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+        with sqlite_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
+            # Actualizar metadatos
+            c.execute("""
+                UPDATE anchor_metadata 
+                SET title=?, subtitle=?, allowed_categories=?, exclude_rules=?, titles=?
+                WHERE anchor_id=?
+            """, (primary_title, req.subtitle, json.dumps(req.allowed_categories), json.dumps(req.exclude_rules), json.dumps(req.titles), anchor_id))
+            # Actualizar vector
+            c.execute("UPDATE anchor_vectors SET embedding=? WHERE anchor_id=?", (vector_blob, anchor_id))
+            conn.commit()
+            conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.delete("/api/admin/cerebro/anchors/{anchor_id}")
+def delete_manual_anchor(anchor_id: str):
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM anchor_metadata WHERE anchor_id = ?", (anchor_id,))
+            c.execute("DELETE FROM anchor_vectors WHERE anchor_id = ?", (anchor_id,))
+            conn.commit()
+            conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/admin/cerebro")
 def get_admin_cerebro(page: int = 1, limit: int = 10):
     """Devuelve telemetría detallada del Cerebro Vectorial para el panel Admin."""
@@ -1517,7 +1617,7 @@ def get_admin_cerebro(page: int = 1, limit: int = 10):
         total_product_vectors = c.fetchone()["c"]
         
         c.execute("""
-            SELECT a.anchor_id, m.title, m.subtitle, m.section_type, a.embedding
+            SELECT a.anchor_id, m.title, m.subtitle, m.section_type, a.embedding, m.is_manual
             FROM anchor_vectors a
             LEFT JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
         """)
@@ -1637,8 +1737,15 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             with sqlite_lock:
                 conn = get_db_connection()
                 c = conn.cursor()
-                c.execute("DELETE FROM anchor_vectors")
-                c.execute("DELETE FROM anchor_metadata")
+                
+                # Obtener los IDs de anclas generadas por IA (no manuales)
+                c.execute("SELECT anchor_id FROM anchor_metadata WHERE is_manual = 0")
+                old_ai_anchors = [row[0] for row in c.fetchall()]
+                
+                for oid in old_ai_anchors:
+                    c.execute("DELETE FROM anchor_metadata WHERE anchor_id = ?", (oid,))
+                    c.execute("DELETE FROM anchor_vectors WHERE anchor_id = ?", (oid,))
+                    
                 conn.commit()
                 conn.close()
                 
@@ -1668,10 +1775,65 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                             (a['id'], vector_blob)
                         )
                         conn.commit()
+                        conn.commit()
                         conn.close()
-            print("Auto-Generación de Anclas con IA completada exitosamente.")
+            print("[Fase 1] Auto-Generación de Anclas con IA completada exitosamente.")
+            
+            # --- FASE 2: CLUSTERS AMBIENTALES/FTS ---
+            prompt_macro = f'''
+            Eres un experto en comportamiento del consumidor. Revisa esta muestra de productos y categorías de nuestro ecosistema:
+            Categorías: {categories}
+            Muestra: {products}
+            
+            Genera reglas dinámicas de descubrimiento, con dos objetos en un JSON: "clusters" y "time_rules".
+            Ejemplo de estructura esperada (DEVUELVE SOLO JSON VÁLIDO SIN MARKDOWN):
+            {{
+              "clusters": {{
+                 "clima_calor": {{
+                    "titles": ["Para este calorcito", "Tardes soleadas"],
+                    "keywords": "helado OR jugo OR cerveza OR pantaloneta",
+                    "storeCategories": "Heladería, Ropa",
+                    "negativeKeywords": "sopa OR chaqueta",
+                    "relatedClusters": "postres"
+                 }},
+                 "desayuno": {{ ... }}
+              }},
+              "time_rules": [
+                 {{"startHour": 5, "endHour": 10, "cluster": "desayuno", "scoreBoost": 5.0}}
+              ]
+            }}
+            Debes definir al menos los clusters de clima ("clima_calor", "clima_frio") y algunos temporales (ej: desayuno, almuerzo, noche).
+            Usa el operador OR en "keywords" y "negativeKeywords".
+            '''
+            macro_response = None
+            for m in models_to_try:
+                try:
+                    model = genai.GenerativeModel(m)
+                    macro_response = model.generate_content(prompt_macro)
+                    if macro_response: break
+                except Exception as e:
+                    pass
+            
+            if macro_response:
+                r_text = macro_response.text.strip()
+                if r_text.startswith("```json"): r_text = r_text[7:]
+                if r_text.startswith("```"): r_text = r_text[3:]
+                if r_text.endswith("```"): r_text = r_text[:-3]
+                
+                macro_data = json.loads(r_text.strip())
+                new_clusters = macro_data.get("clusters")
+                new_time_rules = macro_data.get("time_rules")
+                
+                if new_clusters and new_time_rules and db:
+                    # Sincronizar globalmente en Firebase
+                    db.collection('config').document('algorithm').set({
+                        "clusters": new_clusters,
+                        "time_rules": new_time_rules
+                    }, merge=True)
+                    print("[Fase 2] Clusters Ambientales generados y sincronizados en Firebase.")
+            
         except Exception as e:
-            print("Error en Auto-Generación de Anclas:", e)
+            print("Error en Auto-Generación (Fase 1/2):", e)
             
     background_tasks.add_task(run_generation)
     return {"status": "ok", "message": "Descubrimiento de anclas con IA iniciado en background. Espera un minuto."}
