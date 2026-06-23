@@ -1167,6 +1167,9 @@ class HomeFeedRequest(BaseModel):
     activities: List[dict] = []
     lat: float = None
     lng: float = None
+    override_hour: int = None
+    override_weather_temp: float = None
+    override_weather_code: int = None
 
 class ManualAnchorRequest(BaseModel):
     title: str
@@ -1508,7 +1511,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
     # 4. Fallback Léxico (FTS5) - MACRO_CLUSTERS_CACHE
     cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
     from datetime import datetime, timezone
-    current_hour = (datetime.now(timezone.utc).hour - 5) % 24
+    current_hour = req.override_hour if getattr(req, 'override_hour', None) is not None else (datetime.now(timezone.utc).hour - 5) % 24
     
     for act in activities:
         data = act.to_dict() if hasattr(act, 'to_dict') else act
@@ -1528,27 +1531,31 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 cluster_scores[rule_cluster] += boost
                 
     # 4.1. Reglas Ambientales (Clima Open-Meteo con Caché)
-    if req.lat is not None and req.lng is not None:
+    has_weather_override = getattr(req, 'override_weather_temp', None) is not None and getattr(req, 'override_weather_code', None) is not None
+    if has_weather_override or (req.lat is not None and req.lng is not None):
         try:
-            import requests
-            import time
-            lat_key = round(req.lat, 1)
-            lng_key = round(req.lng, 1)
-            loc_key = f"{lat_key}_{lng_key}"
-            
-            now_ts = time.time()
-            if loc_key in WEATHER_CACHE_STORE and (now_ts - WEATHER_CACHE_STORE[loc_key]["time"] < 3600):
-                # Usar caché (vigencia de 1 hora)
-                temp = WEATHER_CACHE_STORE[loc_key]["temp"]
-                code = WEATHER_CACHE_STORE[loc_key]["code"]
+            if has_weather_override:
+                temp = req.override_weather_temp
+                code = req.override_weather_code
             else:
-                w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat_key}&longitude={lng_key}&current_weather=true", timeout=2).json()
-                if "current_weather" in w_res:
-                    temp = w_res["current_weather"].get("temperature", 20)
-                    code = w_res["current_weather"].get("weathercode", 0)
-                    WEATHER_CACHE_STORE[loc_key] = {"temp": temp, "code": code, "time": now_ts}
+                import requests
+                import time
+                lat_key = round(req.lat, 1)
+                lng_key = round(req.lng, 1)
+                loc_key = f"{lat_key}_{lng_key}"
+                
+                now_ts = time.time()
+                if loc_key in WEATHER_CACHE_STORE and (now_ts - WEATHER_CACHE_STORE[loc_key]["time"] < 3600):
+                    temp = WEATHER_CACHE_STORE[loc_key]["temp"]
+                    code = WEATHER_CACHE_STORE[loc_key]["code"]
                 else:
-                    temp, code = 20, 0
+                    w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat_key}&longitude={lng_key}&current_weather=true", timeout=2).json()
+                    if "current_weather" in w_res:
+                        temp = w_res["current_weather"].get("temperature", 20)
+                        code = w_res["current_weather"].get("weathercode", 0)
+                        WEATHER_CACHE_STORE[loc_key] = {"temp": temp, "code": code, "time": now_ts}
+                    else:
+                        temp, code = 20, 0
                     
             is_night = current_hour < 6 or current_hour >= 18
             env_anchor_id = None
