@@ -2379,7 +2379,7 @@ def delete_manual_anchor(anchor_id: str):
         return {"status": "error", "message": str(e)}
 
 @app.get("/api/admin/cerebro")
-def get_admin_cerebro(page: int = 1, store_page: int = 1, limit: int = 10):
+def get_admin_cerebro(page: int = 1, store_page: int = 1, anchor_page: int = 1, limit: int = 10):
     """Devuelve telemetría detallada del Cerebro Vectorial para el panel Admin."""
     try:
         conn = get_db_connection()
@@ -2392,11 +2392,16 @@ def get_admin_cerebro(page: int = 1, store_page: int = 1, limit: int = 10):
         c.execute("SELECT COUNT(*) as c FROM store_vectors")
         total_store_vectors = c.fetchone()["c"]
         
+        c.execute("SELECT COUNT(*) as c FROM anchor_vectors")
+        total_anchors = c.fetchone()["c"]
+
+        anchor_offset = (anchor_page - 1) * limit
         c.execute("""
             SELECT a.anchor_id, m.title, m.subtitle, m.section_type, a.embedding, m.is_manual
             FROM anchor_vectors a
             LEFT JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
-        """)
+            LIMIT ? OFFSET ?
+        """, (limit, anchor_offset))
         
         anchors = []
         for row in c.fetchall():
@@ -2442,10 +2447,11 @@ def get_admin_cerebro(page: int = 1, store_page: int = 1, limit: int = 10):
         return {
             "status": "ok",
             "fts_clusters": MACRO_CLUSTERS_CACHE,
+            "synonyms": SYNONYMS,
             "vector_metrics": {
                 "total_product_vectors": total_product_vectors,
                 "total_store_vectors": total_store_vectors,
-                "anchors_count": len(anchors),
+                "anchors_count": total_anchors,
                 "anchors": anchors,
                 "sample_products": sample_products,
                 "sample_stores": sample_stores,
@@ -2458,6 +2464,11 @@ def get_admin_cerebro(page: int = 1, store_page: int = 1, limit: int = 10):
                     "page": store_page,
                     "limit": limit,
                     "total": total_store_vectors
+                },
+                "anchor_pagination": {
+                    "page": anchor_page,
+                    "limit": limit,
+                    "total": total_anchors
                 }
             }
         }
