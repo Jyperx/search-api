@@ -1647,7 +1647,7 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                 c = conn.cursor()
                 c.execute("SELECT DISTINCT category FROM search_index WHERE type='product'")
                 categories = [row['category'] for row in c.fetchall() if row['category']]
-                c.execute("SELECT name, description, category FROM search_index WHERE type='product' ORDER BY RANDOM() LIMIT 100")
+                c.execute("SELECT name, description, category FROM search_index WHERE type='product' ORDER BY RANDOM() LIMIT 40")
                 products = [dict(row) for row in c.fetchall()]
                 conn.close()
                 
