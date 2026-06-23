@@ -1064,7 +1064,7 @@ def simulate_home_feed(req: SimulateRequest):
 
 @app.post("/api/home/{uid}")
 def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
-    """Devuelve el inicio completo (Home Feed) basado en el Motor H├¡brido (KNN Vectorial + FTS5)."""
+    """V6: Cerebro Vectorial Unificado. Todo pasa por KNN con Gravedad Dinámica."""
     feed_sections = []
     
     conn = get_db_connection()
@@ -1080,8 +1080,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             def calc_decay(ts):
                 if not ts: return 1.0
                 try:
-                    # Parse timestamp formats from JSON payload
-                    if hasattr(ts, 'timestamp'): pass # already datetime
+                    if hasattr(ts, 'timestamp'): pass
                     elif isinstance(ts, str):
                         try:
                             ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
@@ -1107,57 +1106,119 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             
     global_seen_ids = set()
     
-    # 2. Cruce 1: Encontrar el Ancla ganadora (Contexto)
-    anchors = []
-    if user_vector:
+    # ============================================
+    # PASO 1: DETECTAR CONTEXTO AMBIENTAL (Clima + Hora)
+    # ============================================
+    from datetime import datetime, timezone
+    current_hour = (datetime.now(timezone.utc).hour - 5) % 24
+    
+    # Mapa de gravedad: rule_type → bias (se resta a la distancia coseno)
+    gravity_map = {}
+    
+    # 1a. Gravedad Horaria
+    if 5 <= current_hour <= 10:
+        gravity_map["hora_desayuno"] = 0.12
+    elif 11 <= current_hour <= 14:
+        gravity_map["hora_almuerzo"] = 0.12
+    elif 18 <= current_hour <= 23 or current_hour < 2:
+        gravity_map["hora_noche"] = 0.12
+        gravity_map["hora_cena"] = 0.12
+    elif 14 < current_hour < 18:
+        gravity_map["hora_tarde"] = 0.08
+    
+    # 1b. Gravedad Climática
+    weather_temp = None
+    if req.lat is not None and req.lng is not None:
         try:
+            import requests
+            import time as _time
+            lat_key = round(req.lat, 1)
+            lng_key = round(req.lng, 1)
+            loc_key = f"{lat_key}_{lng_key}"
+            
+            now_ts = _time.time()
+            if loc_key in WEATHER_CACHE_STORE and (now_ts - WEATHER_CACHE_STORE[loc_key]["time"] < 3600):
+                weather_temp = WEATHER_CACHE_STORE[loc_key]["temp"]
+                weather_code = WEATHER_CACHE_STORE[loc_key]["code"]
+            else:
+                w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat_key}&longitude={lng_key}&current_weather=true", timeout=2).json()
+                if "current_weather" in w_res:
+                    weather_temp = w_res["current_weather"].get("temperature", 20)
+                    weather_code = w_res["current_weather"].get("weathercode", 0)
+                    WEATHER_CACHE_STORE[loc_key] = {"temp": weather_temp, "code": weather_code, "time": now_ts}
+                    
+            if weather_temp is not None:
+                if weather_temp >= 24:
+                    gravity_map["clima_calor"] = 0.15
+                elif weather_temp <= 16 or weather_code >= 50:
+                    gravity_map["clima_frio"] = 0.15
+        except Exception as e:
+            print(f"[Weather] Error: {e}")
+    
+    # ============================================
+    # PASO 2: OBTENER TODAS LAS ANCLAS CON DISTANCIA + GRAVEDAD
+    # ============================================
+    anchors = []
+    try:
+        if user_vector:
             c.execute("""
-                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles, vec_distance_cosine(a.embedding, ?) AS distance
+                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, 
+                       m.exclude_rules, m.titles, m.rule_type,
+                       vec_distance_cosine(a.embedding, ?) AS distance
                 FROM anchor_vectors a
                 JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
                 ORDER BY distance ASC
-                LIMIT 2
             """, (user_vector,))
-            anchors = [dict(row) for row in c.fetchall()]
-            
-            # 2.5 Inyecci├│n de Exploraci├│n
+        else:
+            # Usuarios nuevos: traer todas las anclas con distancia neutra
             c.execute("""
-                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles
+                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, 
+                       m.exclude_rules, m.titles, m.rule_type,
+                       0.5 AS distance
                 FROM anchor_vectors a
                 JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
-                WHERE a.anchor_id NOT IN (?, ?)
-                ORDER BY RANDOM()
-                LIMIT 1
-            """, (anchors[0]['anchor_id'] if len(anchors) > 0 else '', anchors[1]['anchor_id'] if len(anchors) > 1 else ''))
-            random_anchor = c.fetchone()
-            if random_anchor:
-                random_anchor = dict(random_anchor)
-                random_anchor["title"] = "Sal de la rutina"
-                random_anchor["subtitle"] = "Descubre algo nuevo hoy"
-                anchors.append(random_anchor)
-                
-        except Exception as e:
-            print(f"[Cruce 1] Error en KNN Anclas: {e}")
-    else:
-        try:
-            # Para usuarios nuevos sin actividades, elegimos 2 anclas sem├ínticas al azar para que exploren
-            c.execute("""
-                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles
-                FROM anchor_vectors a
-                JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
-                ORDER BY RANDOM()
-                LIMIT 2
             """)
-            anchors = [dict(row) for row in c.fetchall()]
-        except Exception as e:
-            print(f"[Cruce 1 Random] Error: {e}")
-            
-    # 3. Cruce 2: Buscar Productos para el Ancla Ganadora (con Fallback de Anclas)
-    vectorial_section = None
+        
+        all_anchors = [dict(row) for row in c.fetchall()]
+        
+        # Aplicar Gravedad Dinámica
+        for anchor in all_anchors:
+            rule = anchor.get("rule_type") or "general"
+            gravity_bias = gravity_map.get(rule, 0.0)
+            anchor["gravity_distance"] = anchor["distance"] - gravity_bias
+        
+        # Re-ordenar por distancia gravitacional
+        all_anchors.sort(key=lambda x: x["gravity_distance"])
+        
+        # Tomar las top 4 mejores (o menos si no hay suficientes)
+        top_anchors = all_anchors[:4]
+        
+        # Anti-Burbuja Vectorial: agregar la ancla MÁS LEJANA al usuario como exploración
+        if len(all_anchors) > 5:
+            # Buscar la más lejana que no esté en el top
+            top_ids = {a["anchor_id"] for a in top_anchors}
+            for far_anchor in reversed(all_anchors):
+                if far_anchor["anchor_id"] not in top_ids:
+                    far_anchor["title"] = "Sal de la rutina"
+                    far_anchor["subtitle"] = "Descubre algo totalmente nuevo"
+                    far_anchor["_is_exploration"] = True
+                    top_anchors.append(far_anchor)
+                    break
+        
+        anchors = top_anchors
+        
+    except Exception as e:
+        print(f"[V6 Gravity] Error obteniendo anclas: {e}")
+    
+    # ============================================
+    # PASO 3: PARA CADA ANCLA, BUSCAR PRODUCTOS (KNN Vectorial)
+    # ============================================
+    import math
+    import json
+    import random
     
     for anchor in anchors:
         try:
-            # JOIN Hard-Filter: En lugar de iterar IDs en python, hacemos JOIN en SQL.
             c.execute("""
                 SELECT p.product_id, vec_distance_cosine(p.embedding, a.embedding) AS distance,
                        s.id, s.type, s.storeId, s.name, s.category, s.description,
@@ -1174,7 +1235,6 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             
             raw_items = c.fetchall()
             
-            import json
             allowed_categories = []
             if anchor.get("allowed_categories"):
                 try: allowed_categories = [cat.lower() for cat in json.loads(anchor["allowed_categories"])]
@@ -1186,19 +1246,16 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 except: pass
                 
             candidate_items = []
-            import math
             
             for raw_row in raw_items:
                 row = dict(raw_row)
-                if row["distance"] > 0.8: # Evitar cross-contamination de clusters
+                if row["distance"] > 0.8:
                     continue
                 
                 cat = str(row.get("category", "")).lower()
-                # Positive Mapping Filter
                 if allowed_categories and cat not in allowed_categories:
                     continue
                     
-                # FILTRO INFALIBLE: Negativas
                 name_cat = (str(row.get("name", "")) + " " + cat).lower()
                 is_excluded = False
                 for rule in exclude_rules:
@@ -1210,7 +1267,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 rid = row["id"]
                 if rid in global_seen_ids: continue
                 
-                # Hybrid Scoring Equation
+                # Hybrid Scoring
                 affinity = max(0.0, 1.0 - row["distance"])
                 purchases = float(row.get("purchases") or 0)
                 likes = float(row.get("likes") or 0)
@@ -1223,195 +1280,6 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 row["final_score"] = (affinity * 0.6) + (popularity * 0.2) + (novelty * 0.1) + (sale_boost * 0.1)
                 candidate_items.append(row)
                 
-            # Re-Rank candidates
-            candidate_items.sort(key=lambda x: x["final_score"], reverse=True)
-            
-            store_counts = {}
-            filtered_items = []
-            
-            for row in candidate_items:
-                rid = row["id"]
-                sid = row["storeId"]
-                if store_counts.get(sid, 0) >= 4: continue # M├íximo 4 por tienda
-                
-                filtered_items.append(row)
-                global_seen_ids.add(rid)
-                store_counts[sid] = store_counts.get(sid, 0) + 1
-                
-                if len(filtered_items) >= 5:
-                    break
-                    
-            # Fallback de Anclas: A├▒adimos todas las que tengan suficientes productos.
-            if len(filtered_items) >= 2:
-                import random
-                import json
-                anchor_title = anchor.get("title", "Explorar")
-                if anchor.get("titles"):
-                    try:
-                        titles_list = json.loads(anchor["titles"])
-                        if titles_list:
-                            anchor_title = random.choice(titles_list)
-                    except: pass
-                    
-                feed_sections.append({
-                    "id": f"dyn_vector_{anchor['anchor_id']}",
-                    "type": "products",
-                    "title": anchor_title,
-                    "subtitle": anchor["subtitle"],
-                    "items": filtered_items
-                })
-        except Exception as e:
-            print(f"[Cruce 2] Error obteniendo productos para ancla {anchor['anchor_id']}: {e}")
-
-        
-    # 4. Fallback L├®xico (FTS5) - MACRO_CLUSTERS_CACHE
-    cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
-    from datetime import datetime, timezone
-    current_hour = (datetime.now(timezone.utc).hour - 5) % 24
-    
-    for act in activities:
-        data = act.to_dict() if hasattr(act, 'to_dict') else act
-        cat = (data.get('category') or '').lower()
-        score = 2.0 if data.get('type') == 'search' else 1.0
-        for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
-            if cat in c_val['keywords'].lower() or cat == c_key:
-                cluster_scores[c_key] += score
-                
-    for rule in TIME_RULES_CACHE:
-        sh, eh = int(rule.get("startHour", 0)), int(rule.get("endHour", 23))
-        rule_cluster, boost = rule.get("cluster", ""), float(rule.get("scoreBoost", 0))
-        if rule_cluster in cluster_scores:
-            if sh <= eh and sh <= current_hour <= eh:
-                cluster_scores[rule_cluster] += boost
-            elif sh > eh and (current_hour >= sh or current_hour <= eh):
-                cluster_scores[rule_cluster] += boost
-                
-    # 4.1. Reglas Ambientales (Clima Open-Meteo con Cach├®)
-    if req.lat is not None and req.lng is not None:
-        try:
-            import requests
-            import time
-            lat_key = round(req.lat, 1)
-            lng_key = round(req.lng, 1)
-            loc_key = f"{lat_key}_{lng_key}"
-            
-            now_ts = time.time()
-            if loc_key in WEATHER_CACHE_STORE and (now_ts - WEATHER_CACHE_STORE[loc_key]["time"] < 3600):
-                # Usar cach├® (vigencia de 1 hora)
-                temp = WEATHER_CACHE_STORE[loc_key]["temp"]
-                code = WEATHER_CACHE_STORE[loc_key]["code"]
-            else:
-                w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat_key}&longitude={lng_key}&current_weather=true", timeout=2).json()
-                if "current_weather" in w_res:
-                    temp = w_res["current_weather"].get("temperature", 20)
-                    code = w_res["current_weather"].get("weathercode", 0)
-                    WEATHER_CACHE_STORE[loc_key] = {"temp": temp, "code": code, "time": now_ts}
-                else:
-                    temp, code = 20, 0
-                    
-            is_night = current_hour < 6 or current_hour >= 18
-            if temp >= 24:
-                key = "calor_noche" if is_night else "calor_dia"
-                cluster_scores[key] = cluster_scores.get(key, 0) + 15.0
-            elif temp <= 16 or code >= 50: # Lluvia
-                key = "frio_noche" if is_night else "frio_dia"
-                cluster_scores[key] = cluster_scores.get(key, 0) + 15.0
-        except Exception as e:
-            print(f"[Weather] Error: {e}")
-                
-    sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
-    top_clusters = sorted_clusters[:2]
-    
-    import random
-    selected_clusters = top_clusters.copy()
-    
-    # 5. Anti-Bubble: Exploraci├│n Estricta de Categor├¡as no visitadas (Ej: Farmacia)
-    try:
-        user_cats = { (act.to_dict().get('category') or '').lower() for act in activities if hasattr(act, 'to_dict') }
-        c.execute("SELECT DISTINCT category FROM search_index WHERE type='product' AND available='1'")
-        all_cats = [row["category"] for row in c.fetchall() if row["category"]]
-        unseen_cats = [cat for cat in all_cats if cat.lower() not in user_cats and cat.lower() != 'general']
-        
-        if unseen_cats:
-            exp_cat = random.choice(unseen_cats)
-            c.execute("""
-                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                       s.name as storeName
-                FROM search_index p
-                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-                WHERE p.type = 'product' AND p.category = ? AND CAST(p.available AS INTEGER) = 1
-                ORDER BY RANDOM()
-                LIMIT 15
-            """, (exp_cat,))
-            
-            exp_items = c.fetchall()
-            if len(exp_items) >= 2:
-                filtered_exp = []
-                store_counts = {}
-                for raw_row in exp_items:
-                    row = dict(raw_row)
-                    rid, sid = row["id"], row["storeId"]
-                    if rid in global_seen_ids or store_counts.get(sid, 0) >= 4: continue
-                    filtered_exp.append(row)
-                    global_seen_ids.add(rid)
-                    store_counts[sid] = store_counts.get(sid, 0) + 1
-                    if len(filtered_exp) >= 5: break
-                
-                if len(filtered_exp) >= 2:
-                    feed_sections.append({
-                        "id": f"dyn_antibubble_{exp_cat.replace(' ', '_')}",
-                        "type": "products",
-                        "title": f"┬┐Has probado {exp_cat}?",
-                        "subtitle": "Descubre algo totalmente nuevo",
-                        "items": filtered_exp
-                    })
-    except Exception as e:
-        print(f"[Anti-Bubble] Error: {e}")
-        
-    if not selected_clusters:
-        selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
-        
-    for cluster in selected_clusters:
-        fts_query = build_cluster_fts_query(cluster, MACRO_CLUSTERS_CACHE[cluster], True)
-        if not fts_query: continue
-        
-        title = random.choice(MACRO_CLUSTERS_CACHE[cluster].get("titles", ["Para ti"]))
-        subtitle = "Basado en tus intereses"
-        
-        try:
-            c.execute("""
-                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                       s.name as storeName
-                FROM search_index p
-                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-                WHERE p.type = 'product' AND search_index MATCH ?
-                ORDER BY RANDOM()
-                LIMIT 40
-            """, (fts_query,))
-            
-            raw_items = c.fetchall()
-            candidate_items = []
-            import math
-            
-            for raw_row in raw_items:
-                row = dict(raw_row)
-                rid = row["id"]
-                if rid in global_seen_ids: continue
-                
-                purchases = float(row.get("purchases") or 0)
-                likes = float(row.get("likes") or 0)
-                views = float(row.get("views") or 0)
-                
-                popularity = math.log1p(purchases + likes * 0.5) / 10.0
-                novelty = 0.2 if (purchases == 0 and views <= 15) else (-0.3 if purchases == 0 and views > 50 else 0.0)
-                sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
-                random_noise = (abs(hash(rid)) % 100) / 1000.0 # 0.0 to 0.1 noise
-                
-                row["final_score"] = popularity + novelty + sale_boost + random_noise
-                candidate_items.append(row)
-                
             candidate_items.sort(key=lambda x: x["final_score"], reverse=True)
             
             store_counts = {}
@@ -1421,21 +1289,36 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 rid = row["id"]
                 sid = row["storeId"]
                 if store_counts.get(sid, 0) >= 4: continue
+                
                 filtered_items.append(row)
                 global_seen_ids.add(rid)
                 store_counts[sid] = store_counts.get(sid, 0) + 1
-                if len(filtered_items) >= 5: break
+                
+                if len(filtered_items) >= 6:
+                    break
                     
-            if len(filtered_items) >= 2: # Reducido a 2 para DB peque├▒as
+            if len(filtered_items) >= 2:
+                anchor_title = anchor.get("title", "Explorar")
+                if not anchor.get("_is_exploration") and anchor.get("titles"):
+                    try:
+                        titles_list = json.loads(anchor["titles"])
+                        if titles_list:
+                            anchor_title = random.choice(titles_list)
+                    except: pass
+                    
+                section_id = f"dyn_vector_{anchor['anchor_id']}"
+                if anchor.get("_is_exploration"):
+                    section_id = f"dyn_explore_{anchor['anchor_id']}"
+                    
                 feed_sections.append({
-                    "id": f"dyn_fts_{cluster}",
+                    "id": section_id,
                     "type": "products",
-                    "title": title,
-                    "subtitle": subtitle,
+                    "title": anchor_title,
+                    "subtitle": anchor["subtitle"],
                     "items": filtered_items
                 })
         except Exception as e:
-            print(f"[FTS Fallback] Error en cluster {cluster}: {e}")
+            print(f"[V6] Error obteniendo productos para ancla {anchor.get('anchor_id', '?')}: {e}")
 
     conn.close()
     return {"sections": feed_sections}
@@ -1863,85 +1746,112 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                             (a['id'], vector_blob)
                         )
                         conn.commit()
-                        conn.commit()
                         conn.close()
-            print("[Fase 1] Auto-Generaci├│n de Anclas con IA completada exitosamente.")
+            print("[Fase 1] Auto-Generación de Anclas con IA completada exitosamente.")
             
-            # --- FASE 2: CLUSTERS AMBIENTALES/FTS ---
-            prompt_macro = f'''
-            Eres un experto en comportamiento del consumidor. Revisa esta muestra de productos y categor├¡as de nuestro ecosistema:
-            Categor├¡as: {categories}
+            # --- FASE 2: ANCLAS AMBIENTALES VECTORIALES (Clima + Hora) ---
+            prompt_ambient = f'''
+            Eres un experto en comportamiento del consumidor. Revisa esta muestra de productos y categorías:
+            Categorías: {categories}
             Muestra: {products}
             
-            Genera reglas din├ímicas de descubrimiento, con dos objetos en un JSON: "clusters" y "time_rules".
-            Ejemplo de estructura esperada (DEVUELVE SOLO JSON V├üLIDO SIN MARKDOWN):
-            {{
-              "clusters": {{
-                 "calor_dia": {{
-                    "titles": ["Para este calorcito", "D├¡as soleados"],
-                    "keywords": "helado OR jugo OR pantaloneta",
-                    "storeCategories": "Helader├¡a, Ropa",
-                    "negativeKeywords": "sopa OR chaqueta",
-                    "relatedClusters": "postres"
-                 }},
-                 "calor_noche": {{
-                    "titles": ["Noches c├ílidas", "Refrescate esta noche"],
-                    "keywords": "helado OR cerveza OR licor",
-                    "storeCategories": "Helader├¡a, Bar",
-                    "negativeKeywords": "sopa OR tinto",
-                    "relatedClusters": "licores"
-                 }},
-                 "frio_dia": {{
-                    "titles": ["D├¡as fr├¡os", "Acompa├▒alo con caf├®"],
-                    "keywords": "cafe OR tinto OR chaqueta",
-                    "storeCategories": "Cafeter├¡a, Ropa",
-                    "negativeKeywords": "helado",
-                    "relatedClusters": "desayuno"
-                 }},
-                 "frio_noche": {{
-                    "titles": ["Noches fr├¡as", "No salgas de casa"],
-                    "keywords": "sopa OR pizza OR hamburguesa",
-                    "storeCategories": "Restaurante",
-                    "negativeKeywords": "helado",
-                    "relatedClusters": "comida_rapida"
-                 }}
+            Genera anclas ambientales (contextuales) que se activan según clima y hora del día.
+            Cada ancla es un cluster semántico con productos relevantes para ese momento.
+            
+            Devuelve un JSON array con esta estructura EXACTA (SOLO JSON VÁLIDO, SIN MARKDOWN):
+            [
+              {{
+                "id": "AMB_calor",
+                "rule_type": "clima_calor",
+                "titles": ["Para este calorcito ☀️", "Refresca tu día", "Combate el calor"],
+                "subtitle": "Productos frescos para ti",
+                "desc": "Helados, jugos, bebidas frías, ropa ligera, protector solar",
+                "allowed_categories": ["Heladería", "Jugos", "Ropa"],
+                "exclude_rules": ["sopa", "chocolate caliente"]
               }},
-              "time_rules": [
-                 {{"startHour": 5, "endHour": 10, "cluster": "desayuno", "scoreBoost": 5.0}}
-              ]
-            }}
-            Debes definir al menos los clusters de clima ("clima_calor", "clima_frio") y algunos temporales (ej: desayuno, almuerzo, noche).
-            Usa el operador OR en "keywords" y "negativeKeywords".
+              {{
+                "id": "AMB_frio",
+                "rule_type": "clima_frio",
+                "titles": ["Días fríos 🌧️", "Entra en calor", "Para el frío"],
+                "subtitle": "Abrígate y come rico",
+                "desc": "Café, sopas, chocolate, ropa abrigada, cobijas",
+                "allowed_categories": ["Cafetería", "Restaurante", "Ropa"],
+                "exclude_rules": ["helado", "pantaloneta"]
+              }},
+              {{
+                "id": "AMB_desayuno",
+                "rule_type": "hora_desayuno",
+                "titles": ["Buenos días ☕", "Empieza con energía"],
+                "subtitle": "Para el desayuno",
+                "desc": "Café, pan, arepas, huevos, jugo de naranja",
+                "allowed_categories": ["Cafetería", "Panadería"],
+                "exclude_rules": []
+              }},
+              {{
+                "id": "AMB_noche",
+                "rule_type": "hora_noche",
+                "titles": ["Antojos nocturnos 🌙", "Para la noche"],
+                "subtitle": "Algo rico antes de dormir",
+                "desc": "Pizza, hamburguesa, helado, cerveza, licor, domicilios",
+                "allowed_categories": ["Comida Rápida", "Licorería"],
+                "exclude_rules": []
+              }}
+            ]
+            
+            REGLAS:
+            - rule_type DEBE ser uno de: "clima_calor", "clima_frio", "hora_desayuno", "hora_almuerzo", "hora_tarde", "hora_noche", "hora_cena"
+            - En allowed_categories usa EXACTAMENTE los nombres de la lista 'Categorías' proporcionada
+            - Genera entre 4 y 8 anclas ambientales
+            - En "titles" incluye 3-4 títulos atractivos y variados
             '''
-            macro_response = None
+            ambient_response = None
             for m in models_to_try:
                 try:
                     model = genai.GenerativeModel(m)
-                    macro_response = model.generate_content(prompt_macro)
-                    if macro_response: break
+                    ambient_response = model.generate_content(prompt_ambient)
+                    if ambient_response: break
                 except Exception as e:
                     pass
             
-            if macro_response:
-                r_text = macro_response.text.strip()
+            if ambient_response:
+                r_text = ambient_response.text.strip()
                 if r_text.startswith("```json"): r_text = r_text[7:]
                 if r_text.startswith("```"): r_text = r_text[3:]
                 if r_text.endswith("```"): r_text = r_text[:-3]
                 
-                macro_data = json.loads(r_text.strip())
-                new_clusters = macro_data.get("clusters")
-                new_time_rules = macro_data.get("time_rules")
+                ambient_anchors = json.loads(r_text.strip())
                 
-                if new_clusters and new_time_rules and db:
-                    # Sincronizar globalmente en Firebase
-                    db.collection('config').document('algorithm').set({
-                        "clusters": new_clusters,
-                        "time_rules": new_time_rules
-                    }, merge=True)
-                    print("[Fase 2] Clusters Ambientales generados y sincronizados en Firebase.")
+                for amb in ambient_anchors:
+                    primary_title = amb.get('titles', [amb.get('title', 'Explorar')])[0]
+                    text = f"{primary_title} - {amb.get('desc', '')}"
+                    import time
+                    res = None
+                    for attempt in range(3):
+                        try:
+                            res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+                            break
+                        except Exception as e:
+                            time.sleep(2 ** attempt)
+                    
+                    if res and 'embedding' in res:
+                        vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+                        with sqlite_lock:
+                            conn = get_db_connection()
+                            c = conn.cursor()
+                            c.execute(
+                                "INSERT OR REPLACE INTO anchor_metadata (anchor_id, title, subtitle, section_type, allowed_categories, exclude_rules, titles, rule_type) VALUES (?, ?, ?, 'products', ?, ?, ?, ?)",
+                                (amb['id'], primary_title, amb.get('subtitle', ''), json.dumps(amb.get('allowed_categories', [])), json.dumps(amb.get('exclude_rules', [])), json.dumps(amb.get('titles', [])), amb.get('rule_type', 'general'))
+                            )
+                            c.execute(
+                                "INSERT OR REPLACE INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
+                                (amb['id'], vector_blob)
+                            )
+                            conn.commit()
+                            conn.close()
+                print("[Fase 2] Anclas Ambientales Vectoriales generadas exitosamente.")
             
         except Exception as e:
-            print("Error en Auto-Generaci├│n (Fase 1/2):", e)
+            print("Error en Auto-Generacion (Fase 1/2):", e)
             
     background_tasks.add_task(run_generation)
     return {"status": "ok", "message": "Descubrimiento de anclas con IA iniciado en background. Espera un minuto."}
