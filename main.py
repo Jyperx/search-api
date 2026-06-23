@@ -1458,6 +1458,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 random_anchor = dict(random_anchor)
                 random_anchor["title"] = "Sal de la rutina"
                 random_anchor["subtitle"] = "Descubre algo nuevo hoy"
+                random_anchor["isExploratory"] = True
                 anchors.append(random_anchor)
                 
         except Exception as e:
@@ -1554,7 +1555,10 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 novelty = 0.2 if (purchases == 0 and views <= 15) else (-0.3 if purchases == 0 and views > 50 else 0.0)
                 sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
                 
-                row["final_score"] = (affinity * 0.6) + (popularity * 0.2) + cr_boost + (novelty * 0.1) + (sale_boost * 0.1)
+                import random
+                random_noise = random.uniform(0.0, 0.1) # 10% factor suerte para mezclar productos
+                
+                row["final_score"] = (affinity * 0.6) + (popularity * 0.2) + cr_boost + (novelty * 0.1) + (sale_boost * 0.1) + random_noise
                 candidate_items.append(row)
                 
             # Re-Rank candidates
@@ -1592,7 +1596,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                     "type": "products",
                     "title": anchor_title,
                     "subtitle": anchor["subtitle"],
-                    "items": filtered_items
+                    "items": filtered_items,
+                    "isExploratory": anchor.get("isExploratory", False)
                 })
         except Exception as e:
             print(f"[Cruce 2] Error obteniendo productos para ancla {anchor['anchor_id']}: {e}")
@@ -1881,11 +1886,31 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         category_counts = {}
         recommended_stores = []
         
+        import random
+        # Robin Hood Algoritmo: Exploración vs Explotación
+        candidate_stores = []
         for raw_row in store_rows:
             row = dict(raw_row)
+            likes_val = int(row["likes"] or 0)
+            distance = row.get("distance", 1.0)
+            
+            # 1. Explotación: Afinidad matemática
+            affinity = max(0.0, 1.0 - distance)
+            
+            # 2. Exploración (Robin Hood): Oportunidad a nuevos y ruido aleatorio
+            novelty = 0.2 if likes_val < 5 else 0.0 # Impulso a tiendas nuevas
+            random_noise = random.uniform(0.0, 0.15) # 15% de factor suerte para rotar
+            
+            final_score = affinity + (math.log1p(likes_val) / 20.0) + novelty + random_noise
+            row["final_score"] = final_score
+            candidate_stores.append(row)
+            
+        # Re-rankeamos las tiendas con la nueva oportunidad justa
+        candidate_stores.sort(key=lambda x: x["final_score"], reverse=True)
+        
+        for row in candidate_stores:
             cat = row["category"]
-            # Tomar top 3 de CADA categoría, sin importar la distancia, 
-            # para que los chips del frontend nunca estén vacíos.
+            # Tomar top 3 de CADA categoría, asegurando exposición justa
             if category_counts.get(cat, 0) < 3:
                 likes_val = int(row["likes"] or 0)
                 rating_val = round(min(5.0, 4.0 + (likes_val / 100)), 1)
