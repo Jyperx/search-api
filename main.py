@@ -223,7 +223,7 @@ LLM_MODEL = "models/gemini-3.1-flash-lite"
 vector_worker_pool = ThreadPoolExecutor(max_workers=3)
 
 def get_db_connection():
-    conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+    conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
@@ -337,9 +337,9 @@ def generate_product_embedding(name, category, description):
     import time
     for attempt in range(2):
         try:
-            llm_res = genai.generate_content(
+            llm_model_instance = genai.GenerativeModel(LLM_MODEL)
+            llm_res = llm_model_instance.generate_content(
                 prompt,
-                model=LLM_MODEL,
                 generation_config=genai.types.GenerationConfig(temperature=0.3, max_output_tokens=30)
             )
             if llm_res and llm_res.text:
@@ -354,7 +354,7 @@ def generate_product_embedding(name, category, description):
     for attempt in range(3):
         try:
             res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
-            return sqlite_vec.serialize_float32(res['embedding'])
+            return sqlite_vec.serialize_float32(res['embedding'][:768])
         except Exception as e:
             time.sleep(2 ** attempt)
     return None
@@ -380,7 +380,7 @@ def async_index_store_vector(s_id, name, category, description, products_summary
     for attempt in range(3):
         try:
             res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
-            vector_bytes = sqlite_vec.serialize_float32(res['embedding'])
+            vector_bytes = sqlite_vec.serialize_float32(res['embedding'][:768])
             break
         except Exception as e:
             time.sleep(2 ** attempt)
@@ -612,7 +612,7 @@ def do_seed_anchors():
             time.sleep(2) # Evitar saturar la capa gratuita de Gemini
             
             if res and 'embedding' in res:
-                vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+                vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
                 with sqlite_lock:
                     conn = get_db_connection()
                     c = conn.cursor()
@@ -1042,7 +1042,7 @@ def search(q: str = "", category: str = "", history: str = ""):
             for attempt in range(2):
                 try:
                     res = genai.embed_content(model=EMBEDDING_MODEL, content=safe_q, task_type="retrieval_document")
-                    raw_query_vector = res['embedding']
+                    raw_query_vector = res['embedding'][:768]
                     
                     # Interpolar con el Perfil del Usuario
                     if history:
@@ -1198,7 +1198,7 @@ def simulate_home_feed(req: SimulateRequest):
         if not res or 'embedding' not in res:
             return {"status": "error", "error": "No se pudo generar el embedding."}
             
-        sim_vector = sqlite_vec.serialize_float32(res['embedding'])
+        sim_vector = sqlite_vec.serialize_float32(res['embedding'][:768])
         
         conn = get_db_connection()
         c = conn.cursor()
@@ -2082,7 +2082,7 @@ def create_manual_anchor(req: ManualAnchorRequest):
         if not res or 'embedding' not in res:
             return {"status": "error", "message": "Failed to generate embedding"}
             
-        vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+        vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
         with sqlite_lock:
             conn = get_db_connection()
             c = conn.cursor()
@@ -2118,7 +2118,7 @@ def update_manual_anchor(anchor_id: str, req: ManualAnchorRequest):
         if not res or 'embedding' not in res:
             return {"status": "error", "message": "Failed to generate embedding"}
             
-        vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+        vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
         with sqlite_lock:
             conn = get_db_connection()
             c = conn.cursor()
@@ -2327,7 +2327,7 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                         time.sleep(2 ** attempt)
                 
                 if res and 'embedding' in res:
-                    vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+                    vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
                     with sqlite_lock:
                         conn = get_db_connection()
                         c = conn.cursor()
@@ -2488,7 +2488,7 @@ class StorePayload(BaseModel):
 @app.post("/api/index/product")
 def index_product(payload: ProductPayload):
     with sqlite_lock:
-        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+        conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
         c = conn.cursor()
         c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (payload.id,))
         c.execute("""
@@ -2510,7 +2510,7 @@ def index_product(payload: ProductPayload):
 @app.delete("/api/index/product/{product_id}")
 def delete_product_index(product_id: str):
     with sqlite_lock:
-        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+        conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
         c = conn.cursor()
         c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (product_id,))
         conn.commit()
@@ -2520,7 +2520,7 @@ def delete_product_index(product_id: str):
 @app.post("/api/index/store")
 def index_store(payload: StorePayload):
     with sqlite_lock:
-        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+        conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
         c = conn.cursor()
         c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (payload.id,))
         c.execute("""
@@ -2537,7 +2537,7 @@ def index_store(payload: StorePayload):
 def on_stores_snapshot(col_snapshot, changes, read_time):
     with sqlite_lock:
         try:
-            conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+            conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
             c = conn.cursor()
             for change in changes:
                 doc = change.document
@@ -2575,7 +2575,7 @@ def delta_sync_loop():
     while True:
         try:
             with sqlite_lock:
-                conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+                conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
                 c = conn.cursor()
                 c.execute("SELECT value FROM metadata WHERE key = 'last_sync_time'")
                 row = c.fetchone()
@@ -2587,7 +2587,7 @@ def delta_sync_loop():
                     sync_database() # Llamamos a la sincronización completa
                     current_time = datetime.now(timezone.utc).isoformat()
                     with sqlite_lock:
-                        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+                        conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
                         c = conn.cursor()
                         c.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", ('last_sync_time', current_time))
                         conn.commit()
@@ -2606,7 +2606,7 @@ def delta_sync_loop():
                 if changed_stores or changed_products:
                     print(f"[Delta Sync] Cambios detectados: {len(changed_stores)} comercios, {len(changed_products)} productos.")
                     with sqlite_lock:
-                        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+                        conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
                         c = conn.cursor()
                         
                         for store in changed_stores:
