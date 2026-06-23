@@ -65,6 +65,73 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+def init_db():
+    conn = get_db_connection()
+    # Habilitar modo WAL (Write-Ahead Logging) para alta concurrencia
+    conn.execute('PRAGMA journal_mode=WAL;')
+    # Optimizar el rendimiento de escritura
+    conn.execute('PRAGMA synchronous=NORMAL;')
+    
+    c = conn.cursor()
+    # FTS5 crea una tabla virtual s├║per r├ípida para texto
+    # type: 'store' o 'product'
+    try:
+        c.execute("SELECT available FROM search_index LIMIT 1")
+    except sqlite3.OperationalError:
+        c.execute("DROP TABLE IF EXISTS search_index")
+        
+    c.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+            id, type, storeId, name, category, description, price, icon, imageUrl UNINDEXED, onSale UNINDEXED, salePrice UNINDEXED, likes UNINDEXED, views UNINDEXED, purchases UNINDEXED, available UNINDEXED, isOpen UNINDEXED
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    ''')
+    
+    
+    c.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS product_vectors USING vec0(
+            product_id TEXT PRIMARY KEY,
+            embedding float[3072]
+        )
+    ''')
+    
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS anchor_metadata (
+            anchor_id TEXT PRIMARY KEY,
+            title TEXT,
+            subtitle TEXT,
+            section_type TEXT
+        )
+    ''')
+    try:
+        c.execute("ALTER TABLE anchor_metadata ADD COLUMN exclude_rules TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE anchor_metadata ADD COLUMN allowed_categories TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE anchor_metadata ADD COLUMN titles TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE anchor_metadata ADD COLUMN is_manual INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE anchor_metadata ADD COLUMN rule_type TEXT DEFAULT 'general'")
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+    conn.close()
+
 @app.post("/api/sync")
 def sync_database():
     """Descarga todos los comercios y productos de Firestore y reconstruye el índice SQLite."""
@@ -923,6 +990,154 @@ def get_system_status():
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour=None):
+    product_ids = []
+    decay_weights = {}
+    
+    for doc in activity_docs:
+        data = doc.to_dict() if hasattr(doc, 'to_dict') else doc
+        p_id = data.get('productId')
+        act_type = data.get('type', 'view')
+        ts = data.get('timestamp')
+        
+        # Action Weighting Multiplier
+        act_multiplier = 1.0
+        if act_type == 'purchase': act_multiplier = 5.0
+        elif act_type == 'cart': act_multiplier = 3.0
+        elif act_type == 'search': act_multiplier = 2.0
+        elif act_type == 'view' or act_type == 'click': act_multiplier = 1.0
+        elif act_type == 'ignored': act_multiplier = -0.5
+        
+        # Circadian Boost (Memoria Horaria)
+        if current_hour is not None and ts:
+            try:
+                from datetime import datetime, timezone
+                act_dt = None
+                if isinstance(ts, str):
+                    act_dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                elif isinstance(ts, (int, float)):
+                    act_dt = datetime.fromtimestamp(ts/1000 if ts > 10000000000 else ts, tz=timezone.utc)
+                    
+                if act_dt:
+                    act_hour = (act_dt.hour - 5) % 24
+                    diff = abs(act_hour - current_hour)
+                    if diff > 12: diff = 24 - diff
+                    # Si ocurri├│ en la misma ventana horaria (+- 3 horas), boost masivo 3x
+                    if diff <= 3:
+                        act_multiplier *= 3.0
+                    # Si ocurri├│ en un momento totalmente opuesto del d├¡a (+- 8 a 12h), penalizamos 0.3x
+                    elif diff >= 8:
+                        act_multiplier *= 0.3
+            except: pass
+        
+        if p_id:
+            weight = calculate_time_decay_func(ts) * act_multiplier
+            if p_id not in decay_weights:
+                product_ids.append(p_id)
+            decay_weights[p_id] = decay_weights.get(p_id, 0.0) + weight
+            
+    if not product_ids:
+        return None
+        
+    conn = get_db_connection()
+    c = conn.cursor()
+    placeholders = ','.join(['?'] * len(product_ids))
+    c.execute(f"SELECT product_id, embedding FROM product_vectors WHERE product_id IN ({placeholders})", tuple(product_ids))
+    rows = c.fetchall()
+    conn.close()
+    
+    vectors_map = {}
+    for row in rows:
+        if row['embedding']:
+            vectors_map[row['product_id']] = np.frombuffer(row['embedding'], dtype=np.float32)
+            
+    user_vector = np.zeros(3072, dtype=np.float32)
+    total_weight = 0.0
+    
+    for p_id in product_ids:
+        if p_id in vectors_map:
+            vec = vectors_map[p_id]
+            w = decay_weights[p_id]
+            user_vector += (vec * w)
+            total_weight += w
+            
+    if total_weight > 0:
+        user_vector = user_vector / total_weight
+        return sqlite_vec.serialize_float32(user_vector.tolist())
+    return None
+
+# ==========================================
+# MOTOR INTELIGENTE DE B├ÜSQUEDA
+# ==========================================
+SYNONYMS = {
+    # Comida R├ípida y Restaurantes
+    "hamburguesa": ["hamburguesa", "burger", "burguer", "hanburguesa"],
+    "gaseosa": ["gaseosa", "coca", "coca-cola", "coca cola", "pepsi", "soda", "sprite", "postobon", "refresco", "bebida"],
+    "pizza": ["pizza", "piza", "pissa"],
+    "perro": ["perro", "hot dog", "hotdog", "salchicha", "hot-dog", "chori", "chorizo"],
+    "pollo": ["pollo", "broaster", "asado", "alitas", "wings", "nuggets", "pechuga"],
+    "papas": ["papas", "fritas", "francesa", "cascos", "salchipapa", "papa"],
+    "helado": ["helado", "postre", "cono", "paleta", "sundae", "mcflurry", "brownie"],
+    "cerveza": ["cerveza", "pola", "biela", "chela", "club colombia", "aguila", "poker", "corona", "heineken"],
+    "jugo": ["jugo", "zumo", "batido", "licuado", "limonada", "jugos", "avena"],
+    "carne": ["carne", "res", "churrasco", "parrilla", "asado", "picada", "cerdo", "chuzo"],
+    "empanada": ["empanada", "pastel", "arepa", "pastelito", "dedito", "tequeno", "teque├▒o", "pandebono", "bu├▒uelo"],
+    "sushi": ["sushi", "maki", "roll", "sashimi", "nigiri"],
+    
+    # Farmacia / Salud
+    "pastillas": ["pastilla", "pildora", "tableta", "medicamento", "droga", "acetaminofen", "ibuprofeno", "aspirina", "dolex", "advil"],
+    "jarabe": ["jarabe", "tos"],
+    "preservativos": ["preservativo", "condon", "condones", "profilactico", "duo", "today"],
+    "alcohol": ["alcohol", "antiseptico", "antibacterial", "desinfectante"],
+    "panal": ["pa├▒al", "panales", "pa├▒ales", "winny", "huggies", "peque├▒in", "pa├▒alitis"],
+    "toallas": ["toalla", "toallas", "nosotras", "protectores", "tampones"],
+    "crema": ["crema", "pomada", "unguento", "gel"],
+    "suero": ["suero", "pedialyte", "electrolit"],
+    
+    # Ferreter├¡a / Hogar
+    "taladro": ["taladro", "perforadora", "pulidora", "caladora"],
+    "martillo": ["martillo", "mazo", "maceta", "alicate", "pinza", "hombre solo"],
+    "destornillador": ["destornillador", "desatornillador", "estrella", "pala"],
+    "bombillo": ["bombillo", "foco", "lampara", "luz", "bombilla", "led"],
+    "pintura": ["pintura", "esmalte", "vinilo", "brocha", "rodillo", "aerosol", "thinner"],
+    "clavos": ["clavo", "clavos", "puntilla", "tornillo", "chazo", "tuerca", "arandela"],
+    "cinta": ["cinta", "pegante", "aislante", "enmascarar", "pegamento", "silicona", "boxer"],
+    "tubo": ["tubo", "pvc", "tuberia", "codo", "accesorio", "soldadura"],
+    "llave": ["llave", "candado", "cerradura", "cerrojo", "chapa"],
+    "cable": ["cable", "alambre", "extension", "enchufe", "tomacorriente", "interruptor"],
+    
+    # Tecnolog├¡a / Celulares
+    "cargador": ["cargador", "cable", "adaptador", "fuente"],
+    "audifonos": ["audifonos", "auriculares", "diadema", "airpods", "inpods", "earpods", "headset"],
+    "celular": ["celular", "telefono", "smartphone", "iphone", "android", "movil", "xiaomi", "samsung", "motorola", "huawei"],
+    "pantalla": ["pantalla", "display", "monitor", "tv", "televisor", "glass", "vidrio templado", "visor"],
+    "bateria": ["bateria", "pila", "powerbank"],
+    "regalo": ["regalo", "mama", "mam├í", "madre", "cumplea├▒os", "aniversario", "floristeria", "flores", "spa", "chocolates", "detalle", "regalos"],
+    "computador": ["computador", "pc", "laptop", "portatil", "computadora", "teclado", "mouse", "raton", "impresora"],
+    "memoria": ["memoria", "usb", "microsd", "pendrive", "disco duro", "ssd"],
+    "funda": ["funda", "estuche", "carcasa", "forro", "case", "protector"]
+}
+
+REVERSE_SYNONYMS = {}
+for root, alts in SYNONYMS.items():
+    for alt in alts:
+        REVERSE_SYNONYMS[alt] = root
+# ==========================================
+
+ANCHORS = [
+    {"id": "A1", "title": "Gustos Culposos", "subtitle": "Para pecar sin remordimiento", "desc": "Comida r├ípida para humanos, hamburguesas, hot dogs, perros calientes, postres dulces, frituras, pizza, donas."},
+    {"id": "A2", "title": "Cena R├ípida", "subtitle": "Sin complicaciones", "desc": "Comida f├ícil de preparar o lista para comer en la noche, s├índwiches, ensaladas ligeras, sushi, wraps."},
+    {"id": "A3", "title": "Desayuno Energ├®tico", "subtitle": "Empieza el d├¡a con todo", "desc": "Caf├®, huevos, pan, arepas, jugo de naranja, tostadas, tocino."},
+    {"id": "A4", "title": "Mercado Fresco", "subtitle": "Para la alacena", "desc": "Frutas frescas, verduras, l├ícteos, carnes, abarrotes, despensa."},
+    {"id": "A5", "title": "Farmacia y Cuidado", "subtitle": "Salud y bienestar", "desc": "Medicamentos, vitaminas, cuidado personal, aseo, primeros auxilios."},
+    {"id": "A6", "title": "Mascotas Felices", "subtitle": "Para tu peludo", "desc": "Alimento y accesorios exclusivos para animales. Croquetas para caninos y felinos, arena, juguetes, snacks para mascotas. (EXCLUYE y rechaza comida r├ípida humana)."},
+    {"id": "A7", "title": "Tecnolog├¡a", "subtitle": "Gadgets y repuestos", "desc": "Celulares, cargadores, aud├¡fonos, pantallas, cables, accesorios electr├│nicos."},
+    {"id": "A8", "title": "Hogar y Ferreter├¡a", "subtitle": "Arregla tu casa", "desc": "Herramientas, bombillos, cintas, plomer├¡a, tornillos, pinturas."}
+]
+
+from fastapi import BackgroundTasks
+
 
 @app.get("/api/admin/users-vectors")
 def get_admin_users_vectors(page: int = 1, limit: int = 10):
