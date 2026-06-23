@@ -1118,6 +1118,11 @@ def search(q: str = "", category: str = "", history: str = ""):
                 vec_products = [r for r in raw_products if r['distance'] <= dynamic_thresh]
                 vec_stores = [r for r in raw_stores if r['distance'] <= dynamic_thresh]
                 
+                # Si el mejor match es muy malo (no es exacto), no llenemos la pantalla de basura, solo sugerimos pocos
+                if not exact_match:
+                    vec_products = vec_products[:4]
+                    vec_stores = vec_stores[:2]
+                
                 vec_all = vec_stores + vec_products
                 vec_all.sort(key=lambda x: x['distance'])
                 
