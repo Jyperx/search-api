@@ -53,6 +53,18 @@ elif os.path.exists(SERVICE_ACCOUNT_FILE):
 else:
     print(f"ADVERTENCIA: No se encontró '{SERVICE_ACCOUNT_FILE}' ni la variable FIREBASE_SERVICE_ACCOUNT. El endpoint /api/sync fallará.")
 
+SQLITE_DB = "search_database.db"
+
+def get_db_connection():
+    conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+    conn.execute('PRAGMA journal_mode=WAL;')
+    conn.execute('PRAGMA synchronous=NORMAL;')
+    conn.row_factory = sqlite3.Row
+    return conn
+
 @app.post("/api/sync")
 def sync_database():
     """Descarga todos los comercios y productos de Firestore y reconstruye el índice SQLite."""
