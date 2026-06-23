@@ -1680,19 +1680,23 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             models_to_try = ["gemini-2.5-flash", "gemini-2.5-pro"]
             response = None
             for m in models_to_try:
-                try:
-                    import time
-                    model = genai.GenerativeModel(m)
-                    # Use standard generate_content
-                    response = model.generate_content(prompt)
-                    if response:
-                        print(f"Modelo {m} seleccionado exitosamente para generación.")
-                        break
-                except Exception as e:
-                    print(f"Modelo {m} falló: {e}")
-                    time.sleep(2)
+                for attempt in range(3):
+                    try:
+                        import time
+                        model = genai.GenerativeModel(m)
+                        # Increased timeout to prevent 504 errors on large payloads
+                        response = model.generate_content(prompt, request_options={"timeout": 120})
+                        if response:
+                            print(f"Modelo {m} seleccionado exitosamente para generación en el intento {attempt+1}.")
+                            break
+                    except Exception as e:
+                        print(f"Modelo {m} falló en el intento {attempt+1}: {e}")
+                        time.sleep(2)
+                if response:
+                    break
+                    
             if not response:
-                raise Exception("Todos los modelos generativos fallaron o no est├ín disponibles en esta API Key.")
+                raise Exception("Todos los modelos generativos fallaron por timeout o no están disponibles.")
                 
             raw_text = response.text.strip()
             if raw_text.startswith("```json"): raw_text = raw_text[7:]
@@ -1802,14 +1806,19 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             '''
             ambient_response = None
             for m in models_to_try:
-                try:
-                    import time
-                    model = genai.GenerativeModel(m)
-                    ambient_response = model.generate_content(prompt_ambient)
-                    if ambient_response: break
-                except Exception as e:
-                    print(f"Modelo {m} falló en Fase 2: {e}")
-                    time.sleep(2)
+                for attempt in range(3):
+                    try:
+                        import time
+                        model = genai.GenerativeModel(m)
+                        ambient_response = model.generate_content(prompt_ambient, request_options={"timeout": 120})
+                        if ambient_response: 
+                            print(f"Modelo {m} seleccionado exitosamente para Fase 2 en el intento {attempt+1}.")
+                            break
+                    except Exception as e:
+                        print(f"Modelo {m} falló en Fase 2 en el intento {attempt+1}: {e}")
+                        time.sleep(2)
+                if ambient_response:
+                    break
             
             if ambient_response:
                 r_text = ambient_response.text.strip()
