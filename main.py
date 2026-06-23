@@ -218,7 +218,8 @@ else:
     SQLITE_DB = 'search_index.db'
 
 genai.configure(api_key=os.getenv("VITE_GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")))
-EMBEDDING_MODEL = "models/gemini-embedding-001"
+EMBEDDING_MODEL = "models/gemini-embedding-2"
+LLM_MODEL = "models/gemini-3.1-flash-lite"
 vector_worker_pool = ThreadPoolExecutor(max_workers=3)
 
 def get_db_connection():
@@ -262,14 +263,14 @@ def init_db():
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS product_vectors USING vec0(
             product_id TEXT PRIMARY KEY,
-            embedding float[3072]
+            embedding float[768]
         )
     ''')
     
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS store_vectors USING vec0(
             store_id TEXT PRIMARY KEY,
-            embedding float[3072]
+            embedding float[768]
         )
     ''')
     
@@ -301,7 +302,7 @@ def init_db():
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS anchor_vectors USING vec0(
             anchor_id TEXT PRIMARY KEY,
-            embedding float[3072]
+            embedding float[768]
         )
     ''')
 
@@ -329,36 +330,27 @@ init_db()
 def generate_product_embedding(name, category, description):
     intent_str = ""
     cat_lower = str(category).lower()
-    name_desc = (str(name) + " " + str(description)).lower()
     
-    # 1. Bebidas y Sed
-    if any(k in name_desc for k in ["jugo", "gaseosa", "cerveza", "limonada", "bebida", "agua", "licor", "trago", "soda", "refresco", "vino"]):
-        intent_str += " [Ideal para: tengo sed, refrescante, sed, para beber, calor]"
-    # 2. Antojos y Dulces
-    elif any(k in name_desc for k in ["helado", "postre", "galleta", "brownie", "pastel", "dulce", "torta", "chocolate", "crepa", "waffle"]):
-        intent_str += " [Ideal para: antojo dulce, postre, azúcar, pecar, algo dulce]"
-    # 3. Comida Fuerte / Hambre
-    elif any(k in name_desc for k in ["carne", "pollo", "pizza", "hamburguesa", "almuerzo", "cena", "sopa", "bandeja", "corrientazo", "churrasco", "perro", "salchipapa", "comida", "pescado"]):
-        intent_str += " [Ideal para: tengo mucha hambre, comida fuerte, almuerzo, cena, llenar el estómago]"
-    # 4. Comida Rápida / Snacks
-    elif any(k in name_desc for k in ["empanada", "arepa", "buñuelo", "pandebono", "pastelito", "dedito", "pan"]):
-        intent_str += " [Ideal para: desayuno, algo ligero, merienda, panadería]"
-        
-    # Categorías Fallback (por si acaso el nombre es raro pero la categoría aporta info)
-    if not intent_str:
-        if cat_lower in ["tecnología", "electrónicos", "celulares"]:
-            intent_str = " [Ideal para: regalar, tecnología, computadora, teléfono, electrónico, gadgets]"
-        elif cat_lower in ["mascotas", "veterinaria", "pet shop"]:
-            intent_str = " [Ideal para: mascota, perro, gato, animal, peludo]"
-        elif cat_lower in ["farmacia", "droguería"]:
-            intent_str = " [Ideal para: salud, enfermo, medicamentos, dolor, gripa, curar, botiquín, me siento mal]"
-        elif cat_lower in ["ropa", "moda", "boutique", "calzado"]:
-            intent_str = " [Ideal para: vestir, ropa nueva, estrenar, estilo, moda]"
-        elif cat_lower in ["floristeria", "regalos", "anchetas"]:
-            intent_str = " [Ideal para: regalar, fecha especial, aniversario, detalle, amor]"
-
-    text = f"Producto a la venta: {name}. Categoría principal: {category}. Descripción: {description}. {intent_str}"
+    # 1. Análisis Semántico Rápido con Gemini 3.1 Flash Lite
+    prompt = f"Actúa como un recomendador experto. Para el producto '{name}' de categoría '{category}' con descripción '{description}', responde ÚNICAMENTE con 4 palabras clave o necesidades cortas separadas por comas para las que sería ideal (ej. 'calor, refrescante, sed' o 'herramientas, arreglar, casa')."
+    
     import time
+    for attempt in range(2):
+        try:
+            llm_res = genai.generate_content(
+                prompt,
+                model=LLM_MODEL,
+                generation_config=genai.types.GenerationConfig(temperature=0.3, max_output_tokens=30)
+            )
+            if llm_res and llm_res.text:
+                intent_str = f" [Contexto Inteligente: {llm_res.text.strip()}]"
+                break
+        except Exception as e:
+            print(f"Error generando LLM intent para {name} (Intento {attempt}): {e}")
+            time.sleep(1)
+            
+    text = f"Producto: {name}. Categoría: {category}. Descripción: {description}. {intent_str}"
+    
     for attempt in range(3):
         try:
             res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
@@ -466,7 +458,7 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour
         if row['embedding']:
             vectors_map[row['product_id']] = np.frombuffer(row['embedding'], dtype=np.float32)
             
-    user_vector = np.zeros(3072, dtype=np.float32)
+    user_vector = np.zeros(768, dtype=np.float32)
     total_weight = 0.0
     
     for p_id in product_ids:
@@ -655,11 +647,17 @@ def sync_database():
             conn = get_db_connection()
             c = conn.cursor()
             
-            # Vaciar el índice actual
-            c.execute("DELETE FROM search_index")
-            c.execute("DELETE FROM promotions")
+            # Vaciar el índice actual reconstruyendo las tablas (necesario por cambio de dimensiones)
+            c.execute("DROP TABLE IF EXISTS search_index")
+            c.execute("DROP TABLE IF EXISTS promotions")
+            c.execute("DROP TABLE IF EXISTS product_vectors")
+            c.execute("DROP TABLE IF EXISTS store_vectors")
+            c.execute("DROP TABLE IF EXISTS anchor_vectors")
             conn.commit()
             conn.close()
+        
+        # Volver a crear las tablas con las nuevas dimensiones (768)
+        init_db()
     
         # 1. Leer Promociones desde marketing_campaigns
         import time
