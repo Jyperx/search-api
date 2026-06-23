@@ -77,7 +77,7 @@ MACRO_CLUSTERS_CACHE = {
         "relatedClusters": "saludable"
     },
     "clima_calor": {
-        "titles": ["Para este calorcito ☀️", "Refréscate", "Tardes soleadas", "Ponte cómodo y fresco"],
+        "titles": ["Para este calorcito ☀️", "Refréscate", "Momentos soleados", "Ponte cómodo y fresco"],
         "keywords": "helado OR jugo OR paleta OR cerveza OR granizado OR frappe OR ensalada OR fruta OR frio OR refresco OR gafas OR pantaloneta OR camiseta OR vestido OR bermuda OR sandalias",
         "storeCategories": "Heladería, Jugos, Bar, Licorería, Ropa, Boutique",
         "negativeKeywords": "sopa OR tinto OR cafe OR caliente OR caldo OR chaqueta OR abrigo",
@@ -1790,7 +1790,7 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             {{
               "clusters": {{
                  "clima_calor": {{
-                    "titles": ["Para este calorcito", "Tardes soleadas"],
+                    "titles": ["Para este calorcito", "Momentos soleados"],
                     "keywords": "helado OR jugo OR cerveza OR pantaloneta",
                     "storeCategories": "Heladería, Ropa",
                     "negativeKeywords": "sopa OR chaqueta",
