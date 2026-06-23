@@ -2711,11 +2711,30 @@ def index_store(payload: StorePayload):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
         """, (
             payload.id, 'store', payload.id, 
-            payload.name, payload.category, '', '', '', payload.imageUrl
-        )) 
+            payload.name, payload.category, '', '', '', payload.imageUrl,
+            # BUG FIX: Guardar el campo isOpen correctamente en el índice
+            1 if payload.isOpen else 0
+        ))
         conn.commit()
         conn.close()
+    # Re-vectorizar el comercio en background con información actualizada
+    vector_worker_pool.submit(async_index_store_vector, payload.id, payload.name, payload.category, '', '')
     return {"status": "indexed", "id": payload.id}
+
+@app.patch("/api/index/store/{store_id}/status")
+def update_store_status(store_id: str, isOpen: bool):
+    """Endpoint ultra-rápido para abrir/cerrar una tienda en tiempo real.
+    Solo actualiza el campo isOpen en SQLite sin hacer un re-índex completo."""
+    with sqlite_lock:
+        conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
+        c = conn.cursor()
+        c.execute(
+            "UPDATE search_index SET isOpen = ? WHERE id = ? AND type = 'store'",
+            (1 if isOpen else 0, store_id)
+        )
+        conn.commit()
+        conn.close()
+    return {"status": "ok", "store_id": store_id, "isOpen": isOpen}
 
 def on_stores_snapshot(col_snapshot, changes, read_time):
     with sqlite_lock:
