@@ -327,7 +327,20 @@ def init_db():
 init_db()
 
 def generate_product_embedding(name, category, description):
-    text = f"Producto a la venta: {name}. Categoría principal del comercio o producto: {category}. Descripción: {description}. (NOTA: Si es comida, pertenece a restaurante/cafetería, NO a mascotas)."
+    intent_str = ""
+    cat_lower = str(category).lower()
+    if cat_lower in ["restaurante", "comida rápida", "comidas", "café", "postres"]:
+        intent_str = " [Ideal para: tengo hambre, almuerzo, cena, comida, antojo, tengo sed, delicioso]"
+    elif cat_lower in ["tecnología", "electrónicos", "celulares"]:
+        intent_str = " [Ideal para: regalar, tecnología, computadora, teléfono, electrónico, gadgets]"
+    elif cat_lower in ["mascotas", "veterinaria", "pet shop"]:
+        intent_str = " [Ideal para: mascota, perro, gato, animal, peludo]"
+    elif cat_lower in ["farmacia", "droguería"]:
+        intent_str = " [Ideal para: salud, enfermo, medicamentos, dolor, gripa, curar, botiquín]"
+    elif cat_lower in ["ropa", "moda", "boutique", "calzado"]:
+        intent_str = " [Ideal para: vestir, ropa nueva, estrenar, estilo, moda]"
+
+    text = f"Producto a la venta: {name}. Categoría principal: {category}. Descripción: {description}. {intent_str}"
     import time
     for attempt in range(3):
         try:
@@ -883,15 +896,31 @@ def build_cluster_fts_query(cluster_name, c_val, include_cluster_name=True):
     return " ".join(fts_query_parts)
 
 @app.get("/api/search")
-def search(q: str = ""):
-    """Busca en milisegundos en el índice FTS5 usando sinónimos y Fuzzy Match."""
-    if not q.strip():
-        return {"results": []}
-    
+def search(q: str = "", category: str = "", history: str = ""):
+    """Busca en el índice FTS5 y Vectorial con Soporte para Categorías y Perfil de Usuario."""
     conn = sqlite3.connect(SQLITE_DB)
-    # Devolver filas como diccionarios
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
+
+    if not q.strip() and category:
+        # Búsqueda pura por categoría (Filtro de Pestañas FrontEnd)
+        c.execute("""
+            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                   s.name as storeName
+            FROM search_index p
+            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+            WHERE p.category = ? OR s.category = ?
+            ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC
+            LIMIT 50
+        """, (category, category))
+        rows = c.fetchall()
+        conn.close()
+        return {"results": [dict(row) for row in rows]}
+
+    if not q.strip():
+        conn.close()
+        return {"results": []}
     
     safe_q = q.replace('"', '').replace("'", "").lower().strip()
     
@@ -990,13 +1019,48 @@ def search(q: str = ""):
                     
                     # Fuzzy match results appended at the end
                     
-        # VECTOR SEARCH ENHANCEMENT
+        # VECTOR SEARCH ENHANCEMENT WITH USER PROFILE (OPTION 3)
         if len(safe_q) >= 3 and not cluster_match:
             query_vector = None
             for attempt in range(2):
                 try:
                     res = genai.embed_content(model=EMBEDDING_MODEL, content=safe_q, task_type="retrieval_document")
-                    query_vector = sqlite_vec.serialize_float32(res['embedding'])
+                    raw_query_vector = res['embedding']
+                    
+                    # Interpolar con el Perfil del Usuario
+                    if history:
+                        import json
+                        try:
+                            activities = json.loads(history)
+                            from datetime import datetime, timezone
+                            now = datetime.now(timezone.utc)
+                            def calc_decay(ts):
+                                if not ts: return 1.0
+                                try:
+                                    if isinstance(ts, str):
+                                        ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                                    elif isinstance(ts, (int, float)):
+                                        ts = datetime.fromtimestamp(ts/1000, tz=timezone.utc)
+                                    else: return 1.0
+                                    days_ago = (now - ts).days
+                                    if days_ago == 0: return 3.0
+                                    elif days_ago > 7: return 0.2
+                                    return 1.0
+                                except: return 1.0
+                            
+                            user_vector = calculate_user_vector(activities, calc_decay, current_hour=datetime.now().hour)
+                            if user_vector:
+                                # Fusión de Vectores: 70% Búsqueda Actual, 30% Historial de Usuario
+                                query_vector = sqlite_vec.serialize_float32(
+                                    [q_v * 0.7 + u_v * 0.3 for q_v, u_v in zip(raw_query_vector, user_vector)]
+                                )
+                            else:
+                                query_vector = sqlite_vec.serialize_float32(raw_query_vector)
+                        except Exception as e:
+                            print("Error procesando history de usuario:", e)
+                            query_vector = sqlite_vec.serialize_float32(raw_query_vector)
+                    else:
+                        query_vector = sqlite_vec.serialize_float32(raw_query_vector)
                     break
                 except Exception as e:
                     print("Error vectorizando search query:", e)
@@ -1043,6 +1107,10 @@ def search(q: str = ""):
         results = []
     finally:
         conn.close()
+    
+    if category and q.strip():
+        # Enforce category filter if both text query and category tab are used
+        results = [r for r in results if r.get('category') == category or r.get('storeName') == category or r.get('storeCategory') == category]
     
     return {"results": results}
 
