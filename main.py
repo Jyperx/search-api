@@ -2757,6 +2757,15 @@ def on_stores_snapshot(col_snapshot, changes, read_time):
                         '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', '')),
                         1 if s_data.get('isOpen', True) else 0
                     ))
+                    # Re-vectorizar en background cuando el nombre/categoría del comercio cambia
+                    vector_worker_pool.submit(
+                        async_index_store_vector,
+                        s_id,
+                        s_data.get('name', ''),
+                        s_data.get('category', ''),
+                        s_data.get('description', ''),
+                        '' # sin productos_summary en listener (evita otra query a Firestore)
+                    )
                 elif change.type.name == 'REMOVED':
                     c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (s_id,))
             conn.commit()
@@ -2825,6 +2834,15 @@ def delta_sync_loop():
                                 '', '', '', s_data.get('logoUrl', s_data.get('imageUrl', '')),
                         1 if s_data.get('isOpen', True) else 0
                     ))
+                            # Re-vectorizar el comercio con sus datos actualizados (nombre, categoría, descripción)
+                            vector_worker_pool.submit(
+                                async_index_store_vector,
+                                s_id,
+                                s_data.get('name', ''),
+                                s_data.get('category', ''),
+                                s_data.get('description', ''),
+                                '' # products_summary se calcula en la vectorización completa
+                            )
                             
                         for prod in changed_products:
                             p_data = prod.to_dict()
