@@ -76,19 +76,33 @@ MACRO_CLUSTERS_CACHE = {
         "negativeKeywords": "desayuno OR pan OR cafe",
         "relatedClusters": "saludable"
     },
-    "clima_calor": {
-        "titles": ["Para este calorcito ☀️", "Refréscate", "Momentos soleados", "Ponte cómodo y fresco"],
-        "keywords": "helado OR jugo OR paleta OR cerveza OR granizado OR frappe OR ensalada OR fruta OR frio OR refresco OR gafas OR pantaloneta OR camiseta OR vestido OR bermuda OR sandalias",
-        "storeCategories": "Heladería, Jugos, Bar, Licorería, Ropa, Boutique",
+    "calor_dia": {
+        "titles": ["Para este calorcito ☀️", "Días soleados", "Refresca tu tarde"],
+        "keywords": "helado OR jugo OR paleta OR granizado OR frappe OR ensalada OR fruta OR refresco OR gafas OR pantaloneta OR camiseta OR bermuda OR sandalias",
+        "storeCategories": "Heladería, Jugos, Ropa, Boutique",
         "negativeKeywords": "sopa OR tinto OR cafe OR caliente OR caldo OR chaqueta OR abrigo",
         "relatedClusters": "postres"
     },
-    "clima_frio": {
-        "titles": ["Para el frío 🌧️", "Acompáñalo con café", "Entra en calor", "Protégete del clima"],
-        "keywords": "cafe OR tinto OR sopa OR caldo OR chocolate OR empanada OR pan OR postre OR tamal OR changua OR chaqueta OR sueter OR bufanda OR abrigo OR cobija OR saco",
-        "storeCategories": "Cafetería, Panaderia, Restaurante, Ropa, Hogar",
+    "calor_noche": {
+        "titles": ["Noches cálidas", "Refréscate esta noche", "El calor no para", "Para compartir hoy"],
+        "keywords": "helado OR cerveza OR licor OR coctel OR refresco OR frio OR hielo OR bebida",
+        "storeCategories": "Heladería, Bar, Licorería",
+        "negativeKeywords": "sopa OR tinto OR cafe OR caliente",
+        "relatedClusters": "licores"
+    },
+    "frio_dia": {
+        "titles": ["Días fríos 🌧️", "Acompáñalo con café", "Entra en calor"],
+        "keywords": "cafe OR tinto OR sopa OR caldo OR chocolate OR empanada OR pan OR postre OR tamal OR changua OR chaqueta OR sueter OR bufanda",
+        "storeCategories": "Cafetería, Panaderia, Restaurante, Ropa",
         "negativeKeywords": "helado OR hielo OR cerveza OR pantaloneta",
         "relatedClusters": "desayuno"
+    },
+    "frio_noche": {
+        "titles": ["Noches frías 🌧️", "No salgas de casa", "Pide a domicilio", "Para el frío de hoy"],
+        "keywords": "sopa OR caldo OR cobija OR saco OR chaqueta OR domicilio OR pizza OR hamburguesa OR comida",
+        "storeCategories": "Restaurante, Hogar, Comida Rápida",
+        "negativeKeywords": "helado OR jugo OR hielo",
+        "relatedClusters": "comida_rapida"
     },
     "comida_rapida": {
         "titles": ["Antojos Rápidos", "Para calmar el hambre", "Pecados deliciosos", "Tus favoritos"],
@@ -330,7 +344,7 @@ def async_index_product_vector(p_id, name, category, description):
         except Exception as e:
             print(f"Error guardando vector: {e}")
 
-def calculate_user_vector(activity_docs, calculate_time_decay_func):
+def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour=None):
     product_ids = []
     decay_weights = {}
     
@@ -338,6 +352,7 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func):
         data = doc.to_dict() if hasattr(doc, 'to_dict') else doc
         p_id = data.get('productId')
         act_type = data.get('type', 'view')
+        ts = data.get('timestamp')
         
         # Action Weighting Multiplier
         act_multiplier = 1.0
@@ -345,9 +360,32 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func):
         elif act_type == 'cart': act_multiplier = 3.0
         elif act_type == 'search': act_multiplier = 2.0
         elif act_type == 'view' or act_type == 'click': act_multiplier = 1.0
+        elif act_type == 'ignored': act_multiplier = -0.5
+        
+        # Circadian Boost (Memoria Horaria)
+        if current_hour is not None and ts:
+            try:
+                from datetime import datetime, timezone
+                act_dt = None
+                if isinstance(ts, str):
+                    act_dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                elif isinstance(ts, (int, float)):
+                    act_dt = datetime.fromtimestamp(ts/1000 if ts > 10000000000 else ts, tz=timezone.utc)
+                    
+                if act_dt:
+                    act_hour = (act_dt.hour - 5) % 24
+                    diff = abs(act_hour - current_hour)
+                    if diff > 12: diff = 24 - diff
+                    # Si ocurrió en la misma ventana horaria (+- 3 horas), boost masivo 3x
+                    if diff <= 3:
+                        act_multiplier *= 3.0
+                    # Si ocurrió en un momento totalmente opuesto del día (+- 8 a 12h), penalizamos 0.3x
+                    elif diff >= 8:
+                        act_multiplier *= 0.3
+            except: pass
         
         if p_id:
-            weight = calculate_time_decay_func(data.get('timestamp')) * act_multiplier
+            weight = calculate_time_decay_func(ts) * act_multiplier
             if p_id not in decay_weights:
                 product_ids.append(p_id)
             decay_weights[p_id] = decay_weights.get(p_id, 0.0) + weight
@@ -1059,7 +1097,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                     return 1.0
                 except: return 1.0
                 
-            user_vector = calculate_user_vector(activities, calc_decay)
+            user_vector = calculate_user_vector(activities, calc_decay, current_hour=datetime.now().hour)
         except Exception as e:
             print("Error generando vector de usuario desde local:", e)
             
@@ -1267,10 +1305,13 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 else:
                     temp, code = 20, 0
                     
+            is_night = current_hour < 6 or current_hour >= 18
             if temp >= 24:
-                cluster_scores["clima_calor"] = cluster_scores.get("clima_calor", 0) + 15.0
+                key = "calor_noche" if is_night else "calor_dia"
+                cluster_scores[key] = cluster_scores.get(key, 0) + 15.0
             elif temp <= 16 or code >= 50: # Lluvia
-                cluster_scores["clima_frio"] = cluster_scores.get("clima_frio", 0) + 15.0
+                key = "frio_noche" if is_night else "frio_dia"
+                cluster_scores[key] = cluster_scores.get(key, 0) + 15.0
         except Exception as e:
             print(f"[Weather] Error: {e}")
                 
@@ -1279,9 +1320,50 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
     
     import random
     selected_clusters = top_clusters.copy()
-    unvisited = [k for k in MACRO_CLUSTERS_CACHE.keys() if k not in top_clusters]
-    exploration_cluster = random.choice(unvisited) if unvisited else None
-    if exploration_cluster: selected_clusters.append(exploration_cluster)
+    
+    # 5. Anti-Bubble: Exploración Estricta de Categorías no visitadas (Ej: Farmacia)
+    try:
+        user_cats = { (act.to_dict().get('category') or '').lower() for act in activities if hasattr(act, 'to_dict') }
+        c.execute("SELECT DISTINCT category FROM search_index WHERE type='product' AND available='1'")
+        all_cats = [row["category"] for row in c.fetchall() if row["category"]]
+        unseen_cats = [cat for cat in all_cats if cat.lower() not in user_cats and cat.lower() != 'general']
+        
+        if unseen_cats:
+            exp_cat = random.choice(unseen_cats)
+            c.execute("""
+                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                       s.name as storeName
+                FROM search_index p
+                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                WHERE p.type = 'product' AND p.category = ? AND CAST(p.available AS INTEGER) = 1
+                ORDER BY RANDOM()
+                LIMIT 15
+            """, (exp_cat,))
+            
+            exp_items = c.fetchall()
+            if len(exp_items) >= 2:
+                filtered_exp = []
+                store_counts = {}
+                for raw_row in exp_items:
+                    row = dict(raw_row)
+                    rid, sid = row["id"], row["storeId"]
+                    if rid in global_seen_ids or store_counts.get(sid, 0) >= 4: continue
+                    filtered_exp.append(row)
+                    global_seen_ids.add(rid)
+                    store_counts[sid] = store_counts.get(sid, 0) + 1
+                    if len(filtered_exp) >= 5: break
+                
+                if len(filtered_exp) >= 2:
+                    feed_sections.append({
+                        "id": f"dyn_antibubble_{exp_cat.replace(' ', '_')}",
+                        "type": "products",
+                        "title": f"¿Has probado {exp_cat}?",
+                        "subtitle": "Descubre algo totalmente nuevo",
+                        "items": filtered_exp
+                    })
+    except Exception as e:
+        print(f"[Anti-Bubble] Error: {e}")
         
     if not selected_clusters:
         selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
@@ -1291,7 +1373,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         if not fts_query: continue
         
         title = random.choice(MACRO_CLUSTERS_CACHE[cluster].get("titles", ["Para ti"]))
-        subtitle = "Descubre algo nuevo" if cluster == exploration_cluster else "Basado en tus intereses"
+        subtitle = "Basado en tus intereses"
         
         try:
             c.execute("""
@@ -1490,7 +1572,7 @@ def get_admin_users_vectors(page: int = 1, limit: int = 10):
             udata = u.to_dict()
             recent_activity = udata.get('recent_activity', [])
             
-            user_vector = calculate_user_vector(recent_activity, calc_decay)
+            user_vector = calculate_user_vector(recent_activity, calc_decay, current_hour=current_hour)
             anchors = []
             if user_vector:
                 c.execute("""
@@ -1789,14 +1871,34 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             Ejemplo de estructura esperada (DEVUELVE SOLO JSON VÁLIDO SIN MARKDOWN):
             {{
               "clusters": {{
-                 "clima_calor": {{
-                    "titles": ["Para este calorcito", "Momentos soleados"],
-                    "keywords": "helado OR jugo OR cerveza OR pantaloneta",
+                 "calor_dia": {{
+                    "titles": ["Para este calorcito", "Días soleados"],
+                    "keywords": "helado OR jugo OR pantaloneta",
                     "storeCategories": "Heladería, Ropa",
                     "negativeKeywords": "sopa OR chaqueta",
                     "relatedClusters": "postres"
                  }},
-                 "desayuno": {{ ... }}
+                 "calor_noche": {{
+                    "titles": ["Noches cálidas", "Refrescate esta noche"],
+                    "keywords": "helado OR cerveza OR licor",
+                    "storeCategories": "Heladería, Bar",
+                    "negativeKeywords": "sopa OR tinto",
+                    "relatedClusters": "licores"
+                 }},
+                 "frio_dia": {{
+                    "titles": ["Días fríos", "Acompañalo con café"],
+                    "keywords": "cafe OR tinto OR chaqueta",
+                    "storeCategories": "Cafetería, Ropa",
+                    "negativeKeywords": "helado",
+                    "relatedClusters": "desayuno"
+                 }},
+                 "frio_noche": {{
+                    "titles": ["Noches frías", "No salgas de casa"],
+                    "keywords": "sopa OR pizza OR hamburguesa",
+                    "storeCategories": "Restaurante",
+                    "negativeKeywords": "helado",
+                    "relatedClusters": "comida_rapida"
+                 }}
               }},
               "time_rules": [
                  {{"startHour": 5, "endHour": 10, "cluster": "desayuno", "scoreBoost": 5.0}}
