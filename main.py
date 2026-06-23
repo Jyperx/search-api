@@ -216,7 +216,7 @@ def init_db():
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS product_vectors USING vec0(
             product_id TEXT PRIMARY KEY,
-            embedding float[768]
+            embedding float[3072]
         )
     ''')
     
@@ -232,7 +232,7 @@ def init_db():
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS anchor_vectors USING vec0(
             anchor_id TEXT PRIMARY KEY,
-            embedding float[768]
+            embedding float[3072]
         )
     ''')
 
@@ -310,7 +310,7 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func):
         if row['embedding']:
             vectors_map[row['product_id']] = np.frombuffer(row['embedding'], dtype=np.float32)
             
-    user_vector = np.zeros(768, dtype=np.float32)
+    user_vector = np.zeros(3072, dtype=np.float32)
     total_weight = 0.0
     
     for p_id in product_ids:
@@ -1351,10 +1351,13 @@ def reset_vectors_db():
         with sqlite_lock:
             conn = get_db_connection()
             c = conn.cursor()
-            c.execute("DELETE FROM product_vectors")
-            c.execute("DELETE FROM anchor_vectors")
+            c.execute("DROP TABLE IF EXISTS product_vectors")
+            c.execute("DROP TABLE IF EXISTS anchor_vectors")
+            c.execute("DELETE FROM anchor_metadata")
             conn.commit()
             conn.close()
+        
+        init_db()
         return {"status": "ok", "message": "Vectores limpiados correctamente."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
