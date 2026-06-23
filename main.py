@@ -97,7 +97,14 @@ def init_db():
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS product_vectors USING vec0(
             product_id TEXT PRIMARY KEY,
-            embedding float[3072]
+            embedding float[768]
+        )
+    ''')
+    
+    c.execute('''
+        CREATE VIRTUAL TABLE IF NOT EXISTS anchor_vectors USING vec0(
+            anchor_id TEXT PRIMARY KEY,
+            embedding float[768]
         )
     ''')
     
@@ -131,6 +138,8 @@ def init_db():
         pass
     conn.commit()
     conn.close()
+
+init_db()
 
 @app.post("/api/sync")
 def sync_database():
@@ -379,7 +388,7 @@ def search(q: str = ""):
     if not q.strip():
         return {"results": []}
     
-    conn = sqlite3.connect(SQLITE_DB)
+    conn = get_db_connection()
     # Devolver filas como diccionarios
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
@@ -480,7 +489,7 @@ def search(q: str = ""):
 @app.get("/api/popular")
 def get_popular_products():
     """Devuelve productos recomendados o populares."""
-    conn = sqlite3.connect(SQLITE_DB)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     # Hacemos JOIN con el registro de la tienda para obtener su nombre
@@ -501,7 +510,7 @@ def get_popular_products():
 @app.get("/api/promotions")
 def get_promotions():
     """Devuelve las promociones indexadas."""
-    conn = sqlite3.connect(SQLITE_DB)
+    conn = get_db_connection()
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
     c.execute("SELECT * FROM promotions")
@@ -924,7 +933,7 @@ def get_user_recommendations(uid: str):
         top_categories = sorted(category_scores.keys(), key=lambda k: category_scores[k], reverse=True)[:2]
         
         # 2. Consultar nuestra base local ultrarrápida (SQLite) para buscar productos de esas categorías
-        conn = sqlite3.connect(SQLITE_DB)
+        conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
@@ -958,7 +967,7 @@ def get_user_recommendations(uid: str):
 def get_system_status():
     """Devuelve métricas del estado del sistema para el panel de administración."""
     try:
-        conn = sqlite3.connect(SQLITE_DB)
+        conn = get_db_connection()
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
@@ -1542,7 +1551,7 @@ class StorePayload(BaseModel):
 @app.post("/api/index/product")
 def index_product(payload: ProductPayload):
     with sqlite_lock:
-        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+        conn = get_db_connection()
         c = conn.cursor()
         c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (payload.id,))
         c.execute("""
@@ -1564,7 +1573,7 @@ def index_product(payload: ProductPayload):
 @app.delete("/api/index/product/{product_id}")
 def delete_product_index(product_id: str):
     with sqlite_lock:
-        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+        conn = get_db_connection()
         c = conn.cursor()
         c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (product_id,))
         conn.commit()
@@ -1574,7 +1583,7 @@ def delete_product_index(product_id: str):
 @app.post("/api/index/store")
 def index_store(payload: StorePayload):
     with sqlite_lock:
-        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+        conn = get_db_connection()
         c = conn.cursor()
         c.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (payload.id,))
         c.execute("""
@@ -1591,7 +1600,7 @@ def index_store(payload: StorePayload):
 def on_stores_snapshot(col_snapshot, changes, read_time):
     with sqlite_lock:
         try:
-            conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+            conn = get_db_connection()
             c = conn.cursor()
             for change in changes:
                 doc = change.document
@@ -1629,7 +1638,7 @@ def delta_sync_loop():
     while True:
         try:
             with sqlite_lock:
-                conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+                conn = get_db_connection()
                 c = conn.cursor()
                 c.execute("SELECT value FROM metadata WHERE key = 'last_sync_time'")
                 row = c.fetchone()
@@ -1641,7 +1650,7 @@ def delta_sync_loop():
                     sync_database() # Llamamos a la sincronización completa
                     current_time = datetime.now(timezone.utc).isoformat()
                     with sqlite_lock:
-                        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+                        conn = get_db_connection()
                         c = conn.cursor()
                         c.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", ('last_sync_time', current_time))
                         conn.commit()
@@ -1660,7 +1669,7 @@ def delta_sync_loop():
                 if changed_stores or changed_products:
                     print(f"[Delta Sync] Cambios detectados: {len(changed_stores)} comercios, {len(changed_products)} productos.")
                     with sqlite_lock:
-                        conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
+                        conn = get_db_connection()
                         c = conn.cursor()
                         
                         for store in changed_stores:
