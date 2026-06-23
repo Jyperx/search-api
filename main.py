@@ -1677,7 +1677,7 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             En "exclude_rules", incluye un arreglo de palabras clave que NO deben aparecer (por si hay ambig├╝edad).
             Devuelve SOLO EL JSON v├ílido, sin c├│digo de bloque extra ni markdown.
             '''
-            models_to_try = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+            models_to_try = ["gemini-2.5-flash", "gemini-2.5-pro"]
             response = None
             for m in models_to_try:
                 try:
