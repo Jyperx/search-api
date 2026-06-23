@@ -905,7 +905,8 @@ def simulate_home_feed(req: SimulateRequest):
                 except: pass
                 
             items = []
-            for row in raw_items:
+            for raw_row in raw_items:
+                row = dict(raw_row)
                 if row["distance"] > 0.8: # Umbral de similitud
                     continue
                 
@@ -1059,7 +1060,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             store_counts = {}
             filtered_items = []
             
-            for row in raw_items:
+            for raw_row in raw_items:
+                row = dict(raw_row)
                 if row["distance"] > 0.8: # Evitar cross-contamination de clusters
                     continue
                 
