@@ -222,6 +222,19 @@ EMBEDDING_MODEL = "models/gemini-embedding-2"
 LLM_MODEL = "models/gemini-3.1-flash-lite"
 vector_worker_pool = ThreadPoolExecutor(max_workers=3)
 
+import threading
+global_sync_state = {
+    "is_syncing": False,
+    "total_products": 0,
+    "completed_products": 0,
+    "status": "idle"
+}
+
+@app.get("/api/admin/sync-status")
+def get_sync_status():
+    return global_sync_state
+
+
 def get_db_connection():
     conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
     conn.row_factory = sqlite3.Row
@@ -639,6 +652,11 @@ def seed_anchors_endpoint(background_tasks: BackgroundTasks):
 @app.post("/api/sync")
 def sync_database():
     """Descarga todos los comercios y productos de Firestore y reconstruye el índice SQLite."""
+    global global_sync_state
+    global_sync_state["is_syncing"] = True
+    global_sync_state["total_products"] = 0
+    global_sync_state["completed_products"] = 0
+    global_sync_state["status"] = "Leyendo de Firebase..."
     try:
         if not db:
             raise HTTPException(status_code=500, detail="Firebase no está inicializado.")
@@ -769,6 +787,7 @@ def sync_database():
                             ))
                     count += 1
                     if p_data.get('available', True):
+                        global_sync_state["total_products"] += 1
                         store_product_names.append(p_data.get('name', ''))
                         vector_worker_pool.submit(
                             async_index_product_vector, 
