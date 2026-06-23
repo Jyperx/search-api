@@ -335,6 +335,18 @@ def init_db():
             subtitleColor TEXT
         )
     ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS search_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            query TEXT NOT NULL,
+            clicked_id TEXT,
+            clicked_category TEXT,
+            result_count INTEGER DEFAULT 0,
+            timestamp TEXT DEFAULT (datetime(''now''))
+        )
+    ''')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_search_logs_query ON search_logs(query)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_search_logs_clicked ON search_logs(clicked_id)')
     conn.commit()
     conn.close()
 
@@ -458,7 +470,7 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour
         elif act_type == 'cart': act_multiplier = 3.0
         elif act_type == 'search': act_multiplier = 2.0
         elif act_type == 'view' or act_type == 'click': act_multiplier = 1.0
-        elif act_type == 'ignored': act_multiplier = -0.5
+        elif act_type == 'ignored': act_multiplier = -0.5 # Default, we scale it later if repeated
         
         # Circadian Boost (Memoria Horaria)
         if current_hour is not None and ts:
@@ -482,12 +494,39 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour
                         act_multiplier *= 0.3
             except: pass
         
+    # Escalar el penalty de 'ignored' por repetición
+    ignored_counts = {}
+    positive_counts = {}
+    category_ignored = {}
+    category_positive = {}
+
+    for doc in activity_docs:
+        data = doc.to_dict() if hasattr(doc, 'to_dict') else doc
+        p_id = data.get('productId')
+        c_id = data.get('categoryId') or data.get('category')
+        act_type = data.get('type', 'view')
+        
         if p_id:
-            weight = calculate_time_decay_func(ts) * act_multiplier
-            if p_id not in decay_weights:
-                product_ids.append(p_id)
-            decay_weights[p_id] = decay_weights.get(p_id, 0.0) + weight
-            
+            if act_type == 'ignored':
+                ignored_counts[p_id] = ignored_counts.get(p_id, 0) + 1
+                if c_id: category_ignored[c_id] = category_ignored.get(c_id, 0) + 1
+            else:
+                positive_counts[p_id] = positive_counts.get(p_id, 0) + 1
+                if c_id: category_positive[c_id] = category_positive.get(c_id, 0) + 1
+
+    # Aplicar escalado de pesos en decay_weights
+    for p_id, w in list(decay_weights.items()):
+        if w < 0: # Es un peso netamente negativo
+            ignores = ignored_counts.get(p_id, 0)
+            positives = positive_counts.get(p_id, 0)
+            if ignores >= 3 and positives == 0:
+                decay_weights[p_id] = w * 2.4  # -0.5 * 2.4 = -1.2 (Súper rechazo)
+            elif ignores == 2 and positives == 0:
+                decay_weights[p_id] = w * 1.6  # -0.5 * 1.6 = -0.8
+            # Si hay positivos, el ignored no duele tanto
+            elif positives > 0:
+                decay_weights[p_id] = w * 0.5
+                
     if not product_ids:
         return None
         
@@ -513,10 +552,27 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour
             user_vector += (vec * w)
             total_weight += w
             
+            
     if total_weight > 0:
         user_vector = user_vector / total_weight
-        # Devolvemos la lista de floats (no bytes) para poder mezclarla luego si es necesario, 
-        # o devolvemos serializado. Mejor devolvemos serializado, pero añadiremos un param.
+        
+        # Aversión de categoría (Si odia una categoría completa, restamos su vector semántico)
+        for cat, ignores in category_ignored.items():
+            pos = category_positive.get(cat, 0)
+            if ignores >= 5 and pos == 0:
+                # Generamos un embedding al vuelo de la categoría odiada (muy raro pero efectivo)
+                try:
+                    cat_vec = generate_product_embedding(cat, cat, "Categoría rechazada por el usuario")
+                    if cat_vec:
+                        # Restamos el 30% del vector de la categoría al vector del usuario
+                        user_vector -= (np.array(cat_vec, dtype=np.float32) * 0.3)
+                except: pass
+                
+        # Normalizamos de nuevo tras la aversión
+        norm = np.linalg.norm(user_vector)
+        if norm > 0:
+            user_vector = user_vector / norm
+            
         return sqlite_vec.serialize_float32(user_vector.tolist())
     return None
 
@@ -579,6 +635,32 @@ for root, alts in SYNONYMS.items():
     for alt in alts:
         REVERSE_SYNONYMS[alt] = root
 # ==========================================
+
+# Cargar sinónimos automáticos al iniciar
+def load_synonyms_from_firestore():
+    global SYNONYMS, REVERSE_SYNONYMS
+    if not db: return
+    try:
+        doc = db.collection('config').document('synonyms').get()
+        if doc.exists:
+            auto_syns = doc.to_dict().get('auto_synonyms', {})
+            count = 0
+            for root, alts in auto_syns.items():
+                if root not in SYNONYMS:
+                    SYNONYMS[root] = []
+                for alt in alts:
+                    if alt not in SYNONYMS[root]:
+                        SYNONYMS[root].append(alt)
+                        count += 1
+            # Reconstruir reverse
+            REVERSE_SYNONYMS.clear()
+            for r, a_list in SYNONYMS.items():
+                for a in a_list:
+                    REVERSE_SYNONYMS[a] = r
+            if count > 0:
+                print(f"Cargados {count} sinónimos auto-aprendidos desde Firestore.")
+    except Exception as e:
+        print(f"Error cargando sinónimos dinámicos: {e}")
 
 ANCHORS = [
     {"id": "A1", "title": "Gustos Culposos", "subtitle": "Para pecar sin remordimiento", "desc": "Comida rápida para humanos, hamburguesas, hot dogs, perros calientes, postres dulces, frituras, pizza, donas."},
@@ -2623,6 +2705,113 @@ def reset_users_activity():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+class SearchClickPayload(BaseModel):
+    query: str
+    clicked_id: str
+    clicked_category: Optional[str] = ""
+    result_count: Optional[int] = 0
+
+@app.post("/api/log/search-click")
+def log_search_click(payload: SearchClickPayload):
+    """Guarda silenciosamente qué clickeó el usuario para una búsqueda específica."""
+    try:
+        with sqlite_lock:
+            conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
+            c = conn.cursor()
+            c.execute('''
+                INSERT INTO search_logs (query, clicked_id, clicked_category, result_count)
+                VALUES (?, ?, ?, ?)
+            ''', (payload.query.lower().strip(), payload.clicked_id, payload.clicked_category, payload.result_count))
+            conn.commit()
+            conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"Error logging search click: {e}")
+        return {"status": "error"}
+
+async def run_auto_learn_synonyms():
+    """Analiza logs de búsqueda y auto-aprende sinónimos colombianos reales."""
+    print("[Auto-Learn] Iniciando fase de descubrimiento...")
+    try:
+        with sqlite_lock:
+            conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
+            c = conn.cursor()
+            # Encontrar pares de queries que llevaron al mismo producto, con al menos 3 ocurrencias totales
+            c.execute('''
+                SELECT query, clicked_id, COUNT(*) as clicks
+                FROM search_logs
+                GROUP BY query, clicked_id
+                HAVING clicks >= 1
+            ''')
+            rows = c.fetchall()
+            conn.close()
+            
+        if not rows:
+            print("[Auto-Learn] Sin datos suficientes para aprender.")
+            return
+
+        # Agrupar por producto
+        product_queries = {}
+        for row in rows:
+            q, pid, count = row
+            if pid not in product_queries: product_queries[pid] = []
+            product_queries[pid].append({"query": q, "count": count})
+
+        candidates_to_evaluate = []
+        for pid, queries in product_queries.items():
+            if len(queries) > 1: # Al menos 2 búsquedas diferentes llevaron al mismo producto
+                words = [q["query"] for q in queries if len(q["query"]) > 2]
+                if len(words) > 1:
+                    candidates_to_evaluate.append(words)
+
+        if not candidates_to_evaluate:
+            print("[Auto-Learn] No hay candidatos suficientes.")
+            return
+
+        print(f"[Auto-Learn] {len(candidates_to_evaluate)} grupos de candidatos a evaluar por Gemini.")
+        
+        # Llamar a Gemini para evaluar candidatos
+        prompt = f"""Actúa como un experto lingüista colombiano. Revisa estos grupos de palabras que los usuarios buscaron y que terminaron en el mismo producto.
+        Identifica cuáles son sinónimos reales o jerga local, y descarta los que son casualidades o palabras genéricas.
+        
+        Candidatos:
+        {json.dumps(candidates_to_evaluate)}
+        
+        Devuelve SOLO un JSON con los nuevos sinónimos validados. Agrupa por la palabra más común como 'root'.
+        Ejemplo: {{"auto_synonyms": {{"hamburguesa": ["burger", "burguer", "hambur"]}} }}
+        """
+        
+        model = genai.GenerativeModel("gemini-2.5-flash")
+        response = model.generate_content(prompt)
+        
+        r_text = response.text.strip()
+        if r_text.startswith("```json"): r_text = r_text[7:]
+        if r_text.startswith("```"): r_text = r_text[3:]
+        if r_text.endswith("```"): r_text = r_text[:-3]
+        
+        data = json.loads(r_text.strip())
+        new_syns = data.get("auto_synonyms", {})
+        
+        if new_syns and db:
+            # Sincronizar globalmente en Firebase
+            db.collection('config').document('synonyms').set({
+                "auto_synonyms": new_syns
+            }, merge=True)
+            print(f"[Auto-Learn] {len(new_syns)} nuevos grupos de sinónimos descubiertos y guardados.")
+            load_synonyms_from_firestore() # Recargar en memoria
+            
+    except Exception as e:
+        print(f"Error en auto-learn-synonyms: {e}")
+
+def run_auto_learn_synonyms_sync():
+    import asyncio
+    asyncio.run(run_auto_learn_synonyms())
+
+@app.post("/api/admin/auto-learn-synonyms")
+def trigger_auto_learn(background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_auto_learn_synonyms_sync)
+    return {"status": "ok", "message": "Proceso de auto-aprendizaje de sinónimos iniciado en background."}
+
 @app.post("/api/reset-clusters")
 def reset_clusters_to_defaults():
     """Empuja los defaults del código a Firestore, reemplazando los clústeres existentes.
@@ -2906,8 +3095,32 @@ def cleanup_activity_loop():
             if deleted_count > 0:
                 print(f"[Cleanup] Eliminados {deleted_count} registros de actividad antiguos.")
                 
+            # Limpiar search_logs de más de 30 días
+            with sqlite_lock:
+                conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
+                c = conn.cursor()
+                c.execute("DELETE FROM search_logs WHERE timestamp < datetime('now', '-30 days')")
+                deleted_logs = c.rowcount
+                conn.commit()
+                conn.close()
+            if deleted_logs > 0:
+                print(f"[Cleanup] Eliminados {deleted_logs} logs de búsqueda antiguos.")
+                
+            # Ejecutar auto-aprendizaje de sinónimos diario
+            print("[Auto-Learn] Iniciando auto-aprendizaje de sinónimos...")
+            try:
+                # Importamos background_tasks de forma falsa o llamamos la función principal
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.create_task(run_auto_learn_synonyms())
+                else:
+                    threading.Thread(target=run_auto_learn_synonyms_sync, daemon=True).start()
+            except Exception as e:
+                print(f"[Auto-Learn Error]: {e}")
+                
         except Exception as e:
-            print(f"[Cleanup Error]: Requiere índice. {e}")
+            print(f"[Cleanup Error]: Requiere índice o error general. {e}")
             
         # Esperar 24 horas (86400 segundos)
         time.sleep(86400)
@@ -2915,5 +3128,6 @@ def cleanup_activity_loop():
 @app.on_event("startup")
 def startup_event():
     print("Search backend is ready. Iniciando procesos en segundo plano...")
+    load_synonyms_from_firestore()
     threading.Thread(target=delta_sync_loop, daemon=True).start()
     threading.Thread(target=cleanup_activity_loop, daemon=True).start()
