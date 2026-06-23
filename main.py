@@ -387,8 +387,25 @@ def async_index_product_vector(p_id, name, category, description):
             print(f"Error guardando vector: {e}")
 
 def async_index_store_vector(s_id, name, category, description, products_summary):
-    text = f"Comercio: {name}. Categoría: {category}. Descripción: {description}. Productos principales que vende: {products_summary}."
+    intent_str = ""
+    prompt = f"Actúa como un recomendador experto. Para el comercio '{name}' de categoría '{category}' que vende '{products_summary}', responde ÚNICAMENTE con 5 palabras clave o tipos de alimentos/servicios separados por comas que se pueden encontrar allí (ej. 'carnes, asados, almuerzos, familiar' o 'licor, rumba, noche, cervezas')."
+    
     import time
+    for attempt in range(2):
+        try:
+            llm_model_instance = genai.GenerativeModel(LLM_MODEL)
+            llm_res = llm_model_instance.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(temperature=0.3, max_output_tokens=40)
+            )
+            if llm_res and llm_res.text:
+                intent_str = f" [Contexto Inteligente: {llm_res.text.strip()}]"
+                break
+        except Exception as e:
+            print(f"Error generando LLM intent para store {name}: {e}")
+            time.sleep(1)
+
+    text = f"Comercio: {name}. Categoría: {category}. Descripción: {description}. Productos principales que vende: {products_summary}. {intent_str}"
     vector_bytes = None
     for attempt in range(3):
         try:
