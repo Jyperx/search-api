@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 app = FastAPI(title="Punto Search Engine (Mini-Algolia)")
-# Habilitar CORS para que la app móvil o web pueda consultar sin bloqueos
+# Habilitar CORS para que la app m├│vil o web pueda consultar sin bloqueos
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -51,7 +51,7 @@ elif os.path.exists(SERVICE_ACCOUNT_FILE):
     firebase_admin.initialize_app(cred)
     db = firestore.client()
 else:
-    print(f"ADVERTENCIA: No se encontró '{SERVICE_ACCOUNT_FILE}' ni la variable FIREBASE_SERVICE_ACCOUNT. El endpoint /api/sync fallará.")
+    print(f"ADVERTENCIA: No se encontr├│ '{SERVICE_ACCOUNT_FILE}' ni la variable FIREBASE_SERVICE_ACCOUNT. El endpoint /api/sync fallar├í.")
 
 # --- ACTIVE CACHE PARA EL ALGORITMO V3.2 ---
 TIME_RULES_CACHE = [
@@ -63,93 +63,93 @@ TIME_RULES_CACHE = [
 ]
 MACRO_CLUSTERS_CACHE = {
     "desayuno": {
-        "titles": ["Empieza el día con energía", "Mañanas deliciosas", "Despierta con sabor", "Para el desayuno"],
-        "keywords": "desayuno OR arepa OR pan OR cafe OR huevos OR tamal OR calentao OR jugo OR tostada OR pandebono OR almojabana OR empanada OR buñuelo",
-        "storeCategories": "Cafetería, Panaderia, Restaurante de desayunos, Desayunos",
+        "titles": ["Empieza el d├¡a con energ├¡a", "Ma├▒anas deliciosas", "Despierta con sabor", "Para el desayuno"],
+        "keywords": "desayuno OR arepa OR pan OR cafe OR huevos OR tamal OR calentao OR jugo OR tostada OR pandebono OR almojabana OR empanada OR bu├▒uelo",
+        "storeCategories": "Cafeter├¡a, Panaderia, Restaurante de desayunos, Desayunos",
         "negativeKeywords": "",
         "relatedClusters": "comida_rapida"
     },
     "almuerzo": {
-        "titles": ["Hora de almorzar", "Almuerzos Ejecutivos", "Para el medio día", "Almuerzo Casero"],
+        "titles": ["Hora de almorzar", "Almuerzos Ejecutivos", "Para el medio d├¡a", "Almuerzo Casero"],
         "keywords": "almuerzo OR corrientazo OR sopa OR arroz OR carne OR pollo OR principio OR bandeja OR menu OR ejecutivo",
         "storeCategories": "Restaurante, Comida Casera, Asadero, Almuerzos",
         "negativeKeywords": "desayuno OR pan OR cafe",
         "relatedClusters": "saludable"
     },
     "calor_dia": {
-        "titles": ["Para este calorcito ☀️", "Días soleados", "Refresca tu tarde"],
+        "titles": ["Para este calorcito ÔÿÇ´©Å", "D├¡as soleados", "Refresca tu tarde"],
         "keywords": "helado OR jugo OR paleta OR granizado OR frappe OR ensalada OR fruta OR refresco OR gafas OR pantaloneta OR camiseta OR bermuda OR sandalias",
-        "storeCategories": "Heladería, Jugos, Ropa, Boutique",
+        "storeCategories": "Helader├¡a, Jugos, Ropa, Boutique",
         "negativeKeywords": "sopa OR tinto OR cafe OR caliente OR caldo OR chaqueta OR abrigo",
         "relatedClusters": "postres"
     },
     "calor_noche": {
-        "titles": ["Noches cálidas", "Refréscate esta noche", "El calor no para", "Para compartir hoy"],
+        "titles": ["Noches c├ílidas", "Refr├®scate esta noche", "El calor no para", "Para compartir hoy"],
         "keywords": "helado OR cerveza OR licor OR coctel OR refresco OR frio OR hielo OR bebida",
-        "storeCategories": "Heladería, Bar, Licorería",
+        "storeCategories": "Helader├¡a, Bar, Licorer├¡a",
         "negativeKeywords": "sopa OR tinto OR cafe OR caliente",
         "relatedClusters": "licores"
     },
     "frio_dia": {
-        "titles": ["Días fríos 🌧️", "Acompáñalo con café", "Entra en calor"],
+        "titles": ["D├¡as fr├¡os ­ƒîº´©Å", "Acomp├í├▒alo con caf├®", "Entra en calor"],
         "keywords": "cafe OR tinto OR sopa OR caldo OR chocolate OR empanada OR pan OR postre OR tamal OR changua OR chaqueta OR sueter OR bufanda",
-        "storeCategories": "Cafetería, Panaderia, Restaurante, Ropa",
+        "storeCategories": "Cafeter├¡a, Panaderia, Restaurante, Ropa",
         "negativeKeywords": "helado OR hielo OR cerveza OR pantaloneta",
         "relatedClusters": "desayuno"
     },
     "frio_noche": {
-        "titles": ["Noches frías 🌧️", "No salgas de casa", "Pide a domicilio", "Para el frío de hoy"],
+        "titles": ["Noches fr├¡as ­ƒîº´©Å", "No salgas de casa", "Pide a domicilio", "Para el fr├¡o de hoy"],
         "keywords": "sopa OR caldo OR cobija OR saco OR chaqueta OR domicilio OR pizza OR hamburguesa OR comida",
-        "storeCategories": "Restaurante, Hogar, Comida Rápida",
+        "storeCategories": "Restaurante, Hogar, Comida R├ípida",
         "negativeKeywords": "helado OR jugo OR hielo",
         "relatedClusters": "comida_rapida"
     },
     "comida_rapida": {
-        "titles": ["Antojos Rápidos", "Para calmar el hambre", "Pecados deliciosos", "Tus favoritos"],
+        "titles": ["Antojos R├ípidos", "Para calmar el hambre", "Pecados deliciosos", "Tus favoritos"],
         "keywords": "hamburguesa OR pizza OR salchipapa OR frito OR alitas OR nuggets OR shawarma OR wrap OR combo",
-        "storeCategories": "Restaurante, Comida Rápida, Hamburgueseria, Pizzeria",
+        "storeCategories": "Restaurante, Comida R├ípida, Hamburgueseria, Pizzeria",
         "negativeKeywords": "",
         "relatedClusters": "licores, saludable"
     },
     "saludable": {
-        "titles": ["Cuida tu cuerpo", "Opciones Saludables", "Ligero y delicioso", "Para mantener la línea"],
+        "titles": ["Cuida tu cuerpo", "Opciones Saludables", "Ligero y delicioso", "Para mantener la l├¡nea"],
         "keywords": "ensalada OR bowl OR saludable OR vegano OR vegetariano OR light OR dieta OR acai OR proteina OR organico",
         "storeCategories": "Restaurante Saludable, Jugos, Comida Saludable, Vegano",
         "negativeKeywords": "",
         "relatedClusters": "mercado"
     },
     "regalos": {
-        "titles": ["Para esa persona especial", "Detalles que enamoran", "Sorpresas únicas", "Regalos inolvidables"],
+        "titles": ["Para esa persona especial", "Detalles que enamoran", "Sorpresas ├║nicas", "Regalos inolvidables"],
         "keywords": "regalo OR flor OR spa OR detalle OR aniversario OR peluche OR amor OR flores OR arreglo OR canasta OR bouquet",
-        "storeCategories": "Regalería, Floristería, Spa, Detalles, Perfumeria",
+        "storeCategories": "Regaler├¡a, Florister├¡a, Spa, Detalles, Perfumeria",
         "negativeKeywords": "chocolate OR torta OR pastel OR cake OR pan",
         "relatedClusters": ""
     },
     "licores": {
-        "titles": ["Para la fiesta", "Salud y celebración", "Prende la noche", "Tus bebidas favoritas"],
+        "titles": ["Para la fiesta", "Salud y celebraci├│n", "Prende la noche", "Tus bebidas favoritas"],
         "keywords": "licor OR cerveza OR aguardiente OR ron OR vodka OR vino OR coctel OR fiesta OR hielo OR tequila OR whisky",
-        "storeCategories": "Licorería, Bar, Distribuidora de Licores",
+        "storeCategories": "Licorer├¡a, Bar, Distribuidora de Licores",
         "negativeKeywords": "",
         "relatedClusters": "comida_rapida, snacks"
     },
     "farmacia": {
-        "titles": ["Cuida de tu salud", "Farmacia en casa", "Lo que necesitas, rápido", "Alivio inmediato"],
-        "keywords": "farmacia OR medicamento OR pastilla OR dolor OR vitamina OR shampoo OR pañal OR crema OR jabon OR desodorante OR curitas OR antiseptico OR alcohol OR suero OR droga",
-        "storeCategories": "Farmacia, Drogueía, Cuidado Personal, Salud, Supermercado",
+        "titles": ["Cuida de tu salud", "Farmacia en casa", "Lo que necesitas, r├ípido", "Alivio inmediato"],
+        "keywords": "farmacia OR medicamento OR pastilla OR dolor OR vitamina OR shampoo OR pa├▒al OR crema OR jabon OR desodorante OR curitas OR antiseptico OR alcohol OR suero OR droga",
+        "storeCategories": "Farmacia, Drogue├¡a, Cuidado Personal, Salud, Supermercado",
         "negativeKeywords": "",
         "relatedClusters": ""
     },
     "hogar": {
         "titles": ["Mejora tu hogar", "Todo para tu casa", "Remodela tu espacio", "Cuidado del hogar"],
         "keywords": "mueble OR herramienta OR pintura OR decoracion OR ferreteria OR destornillador OR bombillo OR taladro OR llave OR tornillo OR cable OR electricidad",
-        "storeCategories": "Ferreteriía, Hogar, Materiales, Decoración",
-        "negativeKeywords": "jabon OR shampoo OR crema OR pañal OR medicamento",
+        "storeCategories": "Ferreteri├¡a, Hogar, Materiales, Decoraci├│n",
+        "negativeKeywords": "jabon OR shampoo OR crema OR pa├▒al OR medicamento",
         "relatedClusters": ""
     },
     "mercado": {
         "titles": ["Directo a tu nevera", "Mercado fresco", "Llena tu despensa", "Frutas y verduras"],
         "keywords": "mercado OR carne OR verdura OR fruta OR lacteo OR viveres OR abarrotes OR huevo OR arroz OR aceite OR sal OR papa OR platano",
-        "storeCategories": "Supermercado, Minimarket, Mercado, Carnicería, Fruver, Tienda",
+        "storeCategories": "Supermercado, Minimarket, Mercado, Carnicer├¡a, Fruver, Tienda",
         "negativeKeywords": "pollo asado OR asadero OR restaurante",
         "relatedClusters": "desayuno"
     },
@@ -161,30 +161,30 @@ MACRO_CLUSTERS_CACHE = {
         "relatedClusters": ""
     },
     "ropa": {
-        "titles": ["Completa tu clóset", "Renueva tu estilo", "Moda recomendada", "Tendencias"],
+        "titles": ["Completa tu cl├│set", "Renueva tu estilo", "Moda recomendada", "Tendencias"],
         "keywords": "ropa OR camisa OR pantalon OR zapato OR tenis OR moda OR accesorio OR reloj OR gafas OR vestido OR falda OR chaqueta OR sudadera",
         "storeCategories": "Ropa, Moda, Calzado, Boutique, Accesorios",
         "negativeKeywords": "",
         "relatedClusters": ""
     },
     "tecnologia": {
-        "titles": ["Gadgets para tu vida", "Tecnología al instante", "Lo último en tech", "Accesorios para tu celular"],
+        "titles": ["Gadgets para tu vida", "Tecnolog├¡a al instante", "Lo ├║ltimo en tech", "Accesorios para tu celular"],
         "keywords": "audifonos OR cargador OR cable OR funda OR celular OR tablet OR powerbank OR bluetooth OR usb OR memoria OR teclado OR mouse",
-        "storeCategories": "Tecnología, Electrónicos, Celulares, Accesorios Tech",
+        "storeCategories": "Tecnolog├¡a, Electr├│nicos, Celulares, Accesorios Tech",
         "negativeKeywords": "",
         "relatedClusters": ""
     },
     "postres": {
-        "titles": ["Dulce tentación", "Antojos dulces", "El postre que mereces", "Algo dulce hoy"],
-        "keywords": "postre OR helado OR torta OR brownie OR cono OR malteada OR muffin OR cheesecake OR tiramisú OR flan OR crepe OR waffle",
-        "storeCategories": "Heladería, Pastelería, Café, Postres",
+        "titles": ["Dulce tentaci├│n", "Antojos dulces", "El postre que mereces", "Algo dulce hoy"],
+        "keywords": "postre OR helado OR torta OR brownie OR cono OR malteada OR muffin OR cheesecake OR tiramis├║ OR flan OR crepe OR waffle",
+        "storeCategories": "Helader├¡a, Pasteler├¡a, Caf├®, Postres",
         "negativeKeywords": "",
         "relatedClusters": "comida_rapida, licores"
     }
 }
 
 # --- WEATHER CACHE (IN-MEMORY) ---
-# Almacena el clima por ubicación redondeada (aprox 10km) para no quemar la API.
+# Almacena el clima por ubicaci├│n redondeada (aprox 10km) para no quemar la API.
 # Formato: {"lat_lng": {"temp": 20, "code": 0, "time": timestamp}}
 WEATHER_CACHE_STORE = {}
 
@@ -198,7 +198,7 @@ def on_algorithm_config_snapshot(doc_snapshot, changes, read_time):
                 MACRO_CLUSTERS_CACHE = data["clusters"]
             if "time_rules" in data:
                 TIME_RULES_CACHE = data["time_rules"]
-            print(f"🔥 Cerebro Híbrido V4.0 RAM Actualizado. Clústeres: {len(MACRO_CLUSTERS_CACHE)} | Reglas: {len(TIME_RULES_CACHE)}")
+            print(f"­ƒöÑ Cerebro H├¡brido V4.0 RAM Actualizado. Cl├║steres: {len(MACRO_CLUSTERS_CACHE)} | Reglas: {len(TIME_RULES_CACHE)}")
 
 if db:
     doc_ref = db.collection('config').document('algorithm')
@@ -238,7 +238,7 @@ def init_db():
     conn.execute('PRAGMA synchronous=NORMAL;')
     
     c = conn.cursor()
-    # FTS5 crea una tabla virtual súper rápida para texto
+    # FTS5 crea una tabla virtual s├║per r├ípida para texto
     # type: 'store' o 'product'
     try:
         c.execute("SELECT available FROM search_index LIMIT 1")
@@ -320,7 +320,7 @@ def init_db():
 init_db()
 
 def generate_product_embedding(name, category, description):
-    text = f"Producto a la venta: {name}. Categoría principal del comercio o producto: {category}. Descripción: {description}. (NOTA: Si es comida, pertenece a restaurante/cafetería, NO a mascotas)."
+    text = f"Producto a la venta: {name}. Categor├¡a principal del comercio o producto: {category}. Descripci├│n: {description}. (NOTA: Si es comida, pertenece a restaurante/cafeter├¡a, NO a mascotas)."
     import time
     for attempt in range(3):
         try:
@@ -376,10 +376,10 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour
                     act_hour = (act_dt.hour - 5) % 24
                     diff = abs(act_hour - current_hour)
                     if diff > 12: diff = 24 - diff
-                    # Si ocurrió en la misma ventana horaria (+- 3 horas), boost masivo 3x
+                    # Si ocurri├│ en la misma ventana horaria (+- 3 horas), boost masivo 3x
                     if diff <= 3:
                         act_multiplier *= 3.0
-                    # Si ocurrió en un momento totalmente opuesto del día (+- 8 a 12h), penalizamos 0.3x
+                    # Si ocurri├│ en un momento totalmente opuesto del d├¡a (+- 8 a 12h), penalizamos 0.3x
                     elif diff >= 8:
                         act_multiplier *= 0.3
             except: pass
@@ -421,10 +421,10 @@ def calculate_user_vector(activity_docs, calculate_time_decay_func, current_hour
     return None
 
 # ==========================================
-# MOTOR INTELIGENTE DE BÚSQUEDA
+# MOTOR INTELIGENTE DE B├ÜSQUEDA
 # ==========================================
 SYNONYMS = {
-    # Comida Rápida y Restaurantes
+    # Comida R├ípida y Restaurantes
     "hamburguesa": ["hamburguesa", "burger", "burguer", "hanburguesa"],
     "gaseosa": ["gaseosa", "coca", "coca-cola", "coca cola", "pepsi", "soda", "sprite", "postobon", "refresco", "bebida"],
     "pizza": ["pizza", "piza", "pissa"],
@@ -435,7 +435,7 @@ SYNONYMS = {
     "cerveza": ["cerveza", "pola", "biela", "chela", "club colombia", "aguila", "poker", "corona", "heineken"],
     "jugo": ["jugo", "zumo", "batido", "licuado", "limonada", "jugos", "avena"],
     "carne": ["carne", "res", "churrasco", "parrilla", "asado", "picada", "cerdo", "chuzo"],
-    "empanada": ["empanada", "pastel", "arepa", "pastelito", "dedito", "tequeno", "tequeño", "pandebono", "buñuelo"],
+    "empanada": ["empanada", "pastel", "arepa", "pastelito", "dedito", "tequeno", "teque├▒o", "pandebono", "bu├▒uelo"],
     "sushi": ["sushi", "maki", "roll", "sashimi", "nigiri"],
     
     # Farmacia / Salud
@@ -443,12 +443,12 @@ SYNONYMS = {
     "jarabe": ["jarabe", "tos"],
     "preservativos": ["preservativo", "condon", "condones", "profilactico", "duo", "today"],
     "alcohol": ["alcohol", "antiseptico", "antibacterial", "desinfectante"],
-    "panal": ["pañal", "panales", "pañales", "winny", "huggies", "pequeñin", "pañalitis"],
+    "panal": ["pa├▒al", "panales", "pa├▒ales", "winny", "huggies", "peque├▒in", "pa├▒alitis"],
     "toallas": ["toalla", "toallas", "nosotras", "protectores", "tampones"],
     "crema": ["crema", "pomada", "unguento", "gel"],
     "suero": ["suero", "pedialyte", "electrolit"],
     
-    # Ferretería / Hogar
+    # Ferreter├¡a / Hogar
     "taladro": ["taladro", "perforadora", "pulidora", "caladora"],
     "martillo": ["martillo", "mazo", "maceta", "alicate", "pinza", "hombre solo"],
     "destornillador": ["destornillador", "desatornillador", "estrella", "pala"],
@@ -460,13 +460,13 @@ SYNONYMS = {
     "llave": ["llave", "candado", "cerradura", "cerrojo", "chapa"],
     "cable": ["cable", "alambre", "extension", "enchufe", "tomacorriente", "interruptor"],
     
-    # Tecnología / Celulares
+    # Tecnolog├¡a / Celulares
     "cargador": ["cargador", "cable", "adaptador", "fuente"],
     "audifonos": ["audifonos", "auriculares", "diadema", "airpods", "inpods", "earpods", "headset"],
     "celular": ["celular", "telefono", "smartphone", "iphone", "android", "movil", "xiaomi", "samsung", "motorola", "huawei"],
     "pantalla": ["pantalla", "display", "monitor", "tv", "televisor", "glass", "vidrio templado", "visor"],
     "bateria": ["bateria", "pila", "powerbank"],
-    "regalo": ["regalo", "mama", "mamá", "madre", "cumpleaños", "aniversario", "floristeria", "flores", "spa", "chocolates", "detalle", "regalos"],
+    "regalo": ["regalo", "mama", "mam├í", "madre", "cumplea├▒os", "aniversario", "floristeria", "flores", "spa", "chocolates", "detalle", "regalos"],
     "computador": ["computador", "pc", "laptop", "portatil", "computadora", "teclado", "mouse", "raton", "impresora"],
     "memoria": ["memoria", "usb", "microsd", "pendrive", "disco duro", "ssd"],
     "funda": ["funda", "estuche", "carcasa", "forro", "case", "protector"]
@@ -479,20 +479,20 @@ for root, alts in SYNONYMS.items():
 # ==========================================
 
 ANCHORS = [
-    {"id": "A1", "title": "Gustos Culposos", "subtitle": "Para pecar sin remordimiento", "desc": "Comida rápida para humanos, hamburguesas, hot dogs, perros calientes, postres dulces, frituras, pizza, donas."},
-    {"id": "A2", "title": "Cena Rápida", "subtitle": "Sin complicaciones", "desc": "Comida fácil de preparar o lista para comer en la noche, sándwiches, ensaladas ligeras, sushi, wraps."},
-    {"id": "A3", "title": "Desayuno Energético", "subtitle": "Empieza el día con todo", "desc": "Café, huevos, pan, arepas, jugo de naranja, tostadas, tocino."},
-    {"id": "A4", "title": "Mercado Fresco", "subtitle": "Para la alacena", "desc": "Frutas frescas, verduras, lácteos, carnes, abarrotes, despensa."},
+    {"id": "A1", "title": "Gustos Culposos", "subtitle": "Para pecar sin remordimiento", "desc": "Comida r├ípida para humanos, hamburguesas, hot dogs, perros calientes, postres dulces, frituras, pizza, donas."},
+    {"id": "A2", "title": "Cena R├ípida", "subtitle": "Sin complicaciones", "desc": "Comida f├ícil de preparar o lista para comer en la noche, s├índwiches, ensaladas ligeras, sushi, wraps."},
+    {"id": "A3", "title": "Desayuno Energ├®tico", "subtitle": "Empieza el d├¡a con todo", "desc": "Caf├®, huevos, pan, arepas, jugo de naranja, tostadas, tocino."},
+    {"id": "A4", "title": "Mercado Fresco", "subtitle": "Para la alacena", "desc": "Frutas frescas, verduras, l├ícteos, carnes, abarrotes, despensa."},
     {"id": "A5", "title": "Farmacia y Cuidado", "subtitle": "Salud y bienestar", "desc": "Medicamentos, vitaminas, cuidado personal, aseo, primeros auxilios."},
-    {"id": "A6", "title": "Mascotas Felices", "subtitle": "Para tu peludo", "desc": "Alimento y accesorios exclusivos para animales. Croquetas para caninos y felinos, arena, juguetes, snacks para mascotas. (EXCLUYE y rechaza comida rápida humana)."},
-    {"id": "A7", "title": "Tecnología", "subtitle": "Gadgets y repuestos", "desc": "Celulares, cargadores, audífonos, pantallas, cables, accesorios electrónicos."},
-    {"id": "A8", "title": "Hogar y Ferretería", "subtitle": "Arregla tu casa", "desc": "Herramientas, bombillos, cintas, plomería, tornillos, pinturas."}
+    {"id": "A6", "title": "Mascotas Felices", "subtitle": "Para tu peludo", "desc": "Alimento y accesorios exclusivos para animales. Croquetas para caninos y felinos, arena, juguetes, snacks para mascotas. (EXCLUYE y rechaza comida r├ípida humana)."},
+    {"id": "A7", "title": "Tecnolog├¡a", "subtitle": "Gadgets y repuestos", "desc": "Celulares, cargadores, aud├¡fonos, pantallas, cables, accesorios electr├│nicos."},
+    {"id": "A8", "title": "Hogar y Ferreter├¡a", "subtitle": "Arregla tu casa", "desc": "Herramientas, bombillos, cintas, plomer├¡a, tornillos, pinturas."}
 ]
 
 from fastapi import BackgroundTasks
 
 def do_seed_anchors():
-    """Lógica interna para sembrar anclas en segundo plano."""
+    """L├│gica interna para sembrar anclas en segundo plano."""
     try:
         with sqlite_lock:
             conn = get_db_connection()
@@ -537,20 +537,20 @@ def do_seed_anchors():
 def seed_anchors_endpoint(background_tasks: BackgroundTasks):
     """Siembra los vectores ancla base en SQLite en bg para evitar Timeout."""
     background_tasks.add_task(do_seed_anchors)
-    return {"status": "processing", "message": "Vectores ancla sembrándose en segundo plano."}
+    return {"status": "processing", "message": "Vectores ancla sembr├índose en segundo plano."}
 
 @app.post("/api/sync")
 def sync_database():
-    """Descarga todos los comercios y productos de Firestore y reconstruye el índice SQLite."""
+    """Descarga todos los comercios y productos de Firestore y reconstruye el ├¡ndice SQLite."""
     try:
         if not db:
-            raise HTTPException(status_code=500, detail="Firebase no está inicializado.")
+            raise HTTPException(status_code=500, detail="Firebase no est├í inicializado.")
         
         with sqlite_lock:
             conn = get_db_connection()
             c = conn.cursor()
             
-            # Vaciar el índice actual
+            # Vaciar el ├¡ndice actual
             c.execute("DELETE FROM search_index")
             c.execute("DELETE FROM promotions")
             conn.commit()
@@ -572,7 +572,7 @@ def sync_database():
                 for promo in camps:
                     p_data = promo.to_dict()
                     if p_data.get('type') in ['simple', 'premium_product', 'premium_store']:
-                        # Validar estado y expiración
+                        # Validar estado y expiraci├│n
                         if p_data.get('status') == 'active':
                             expires_at = p_data.get('expiresAt', 0)
                             if expires_at > now_ms:
@@ -621,7 +621,7 @@ def sync_database():
             with sqlite_lock:
                 conn = get_db_connection()
                 c = conn.cursor()
-                # Insertar el comercio en el índice
+                # Insertar el comercio en el ├¡ndice
                 c.execute("""
                     INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, 0, 0, 1, ?)
@@ -636,7 +636,7 @@ def sync_database():
                 conn.commit()
                 conn.close()
             
-            # Leer los productos de este comercio (Sub-colección)
+            # Leer los productos de este comercio (Sub-colecci├│n)
             products_ref = stores_ref.document(s_id).collection("products")
             products = products_ref.stream()
             
@@ -675,16 +675,16 @@ def sync_database():
                 conn.commit()
                 conn.close()
         
-        return {"message": "Sincronización exitosa", "items_indexed": count}
+        return {"message": "Sincronizaci├│n exitosa", "items_indexed": count}
     except Exception as e:
         print("Sync Error:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/sync/store/{store_id}")
 def sync_store(store_id: str):
-    """Sincroniza un solo comercio y sus productos (Más rápido)."""
+    """Sincroniza un solo comercio y sus productos (M├ís r├ípido)."""
     if not db:
-        raise HTTPException(status_code=500, detail="Firebase no está inicializado.")
+        raise HTTPException(status_code=500, detail="Firebase no est├í inicializado.")
         
     with sqlite_lock:
         conn = get_db_connection()
@@ -782,7 +782,7 @@ def build_cluster_fts_query(cluster_name, c_val, include_cluster_name=True):
 
 @app.get("/api/search")
 def search(q: str = ""):
-    """Busca en milisegundos en el índice FTS5 usando sinónimos y Fuzzy Match."""
+    """Busca en milisegundos en el ├¡ndice FTS5 usando sin├│nimos y Fuzzy Match."""
     if not q.strip():
         return {"results": []}
     
@@ -819,7 +819,7 @@ def search(q: str = ""):
         fts_query = " ".join(expanded_parts)
     
     try:
-        # Buscamos en todas las columnas y ordenamos por "rank" (relevancia automática de SQLite FTS5)
+        # Buscamos en todas las columnas y ordenamos por "rank" (relevancia autom├ítica de SQLite FTS5)
         c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                    p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
@@ -861,7 +861,7 @@ def search(q: str = ""):
             rows_like = c.fetchall()
             results = [dict(row) for row in rows_like]
 
-        # FALLBACK 2: FUZZY (Si no encontró nada y la query tiene al menos 3 letras)
+        # FALLBACK 2: FUZZY (Si no encontr├│ nada y la query tiene al menos 3 letras)
         if len(results) == 0 and len(safe_q) >= 3:
             c.execute("""
                 SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
@@ -881,7 +881,7 @@ def search(q: str = ""):
                 if matches:
                     seen_ids = set()
                     for item in all_items:
-                        # Si el nombre del item fue uno de los que matcheó
+                        # Si el nombre del item fue uno de los que matche├│
                         if item["name"] in matches and item["id"] not in seen_ids:
                             results.append(dict(item))
                             seen_ids.add(item["id"])
@@ -889,7 +889,7 @@ def search(q: str = ""):
                     results.sort(key=lambda x: matches.index(x["name"]) if x["name"] in matches else 999)
                     
     except Exception as e:
-        print("Error de búsqueda:", e)
+        print("Error de b├║squeda:", e)
         results = []
     finally:
         conn.close()
@@ -964,7 +964,7 @@ def simulate_home_feed(req: SimulateRequest):
         conn = get_db_connection()
         c = conn.cursor()
         
-        # 2. Buscar las 3 anclas más afines al prompt
+        # 2. Buscar las 3 anclas m├ís afines al prompt
         c.execute("""
             SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles, vec_distance_cosine(a.embedding, ?) AS distance
             FROM anchor_vectors a
@@ -1060,7 +1060,7 @@ def simulate_home_feed(req: SimulateRequest):
 
 @app.post("/api/home/{uid}")
 def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
-    """Devuelve el inicio completo (Home Feed) basado en el Motor Híbrido (KNN Vectorial + FTS5)."""
+    """Devuelve el inicio completo (Home Feed) basado en el Motor H├¡brido (KNN Vectorial + FTS5)."""
     feed_sections = []
     
     conn = get_db_connection()
@@ -1116,7 +1116,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             """, (user_vector,))
             anchors = [dict(row) for row in c.fetchall()]
             
-            # 2.5 Inyección de Exploración
+            # 2.5 Inyecci├│n de Exploraci├│n
             c.execute("""
                 SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles
                 FROM anchor_vectors a
@@ -1136,7 +1136,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             print(f"[Cruce 1] Error en KNN Anclas: {e}")
     else:
         try:
-            # Para usuarios nuevos sin actividades, elegimos 2 anclas semánticas al azar para que exploren
+            # Para usuarios nuevos sin actividades, elegimos 2 anclas sem├ínticas al azar para que exploren
             c.execute("""
                 SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles
                 FROM anchor_vectors a
@@ -1228,7 +1228,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             for row in candidate_items:
                 rid = row["id"]
                 sid = row["storeId"]
-                if store_counts.get(sid, 0) >= 4: continue # Máximo 4 por tienda
+                if store_counts.get(sid, 0) >= 4: continue # M├íximo 4 por tienda
                 
                 filtered_items.append(row)
                 global_seen_ids.add(rid)
@@ -1237,7 +1237,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 if len(filtered_items) >= 5:
                     break
                     
-            # Fallback de Anclas: Añadimos todas las que tengan suficientes productos.
+            # Fallback de Anclas: A├▒adimos todas las que tengan suficientes productos.
             if len(filtered_items) >= 2:
                 import random
                 import json
@@ -1260,7 +1260,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             print(f"[Cruce 2] Error obteniendo productos para ancla {anchor['anchor_id']}: {e}")
 
         
-    # 4. Fallback Léxico (FTS5) - MACRO_CLUSTERS_CACHE
+    # 4. Fallback L├®xico (FTS5) - MACRO_CLUSTERS_CACHE
     cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
     from datetime import datetime, timezone
     current_hour = (datetime.now(timezone.utc).hour - 5) % 24
@@ -1282,7 +1282,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             elif sh > eh and (current_hour >= sh or current_hour <= eh):
                 cluster_scores[rule_cluster] += boost
                 
-    # 4.1. Reglas Ambientales (Clima Open-Meteo con Caché)
+    # 4.1. Reglas Ambientales (Clima Open-Meteo con Cach├®)
     if req.lat is not None and req.lng is not None:
         try:
             import requests
@@ -1293,7 +1293,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             
             now_ts = time.time()
             if loc_key in WEATHER_CACHE_STORE and (now_ts - WEATHER_CACHE_STORE[loc_key]["time"] < 3600):
-                # Usar caché (vigencia de 1 hora)
+                # Usar cach├® (vigencia de 1 hora)
                 temp = WEATHER_CACHE_STORE[loc_key]["temp"]
                 code = WEATHER_CACHE_STORE[loc_key]["code"]
             else:
@@ -1321,7 +1321,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
     import random
     selected_clusters = top_clusters.copy()
     
-    # 5. Anti-Bubble: Exploración Estricta de Categorías no visitadas (Ej: Farmacia)
+    # 5. Anti-Bubble: Exploraci├│n Estricta de Categor├¡as no visitadas (Ej: Farmacia)
     try:
         user_cats = { (act.to_dict().get('category') or '').lower() for act in activities if hasattr(act, 'to_dict') }
         c.execute("SELECT DISTINCT category FROM search_index WHERE type='product' AND available='1'")
@@ -1358,7 +1358,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                     feed_sections.append({
                         "id": f"dyn_antibubble_{exp_cat.replace(' ', '_')}",
                         "type": "products",
-                        "title": f"¿Has probado {exp_cat}?",
+                        "title": f"┬┐Has probado {exp_cat}?",
                         "subtitle": "Descubre algo totalmente nuevo",
                         "items": filtered_exp
                     })
@@ -1422,7 +1422,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 store_counts[sid] = store_counts.get(sid, 0) + 1
                 if len(filtered_items) >= 5: break
                     
-            if len(filtered_items) >= 2: # Reducido a 2 para DB pequeñas
+            if len(filtered_items) >= 2: # Reducido a 2 para DB peque├▒as
                 feed_sections.append({
                     "id": f"dyn_fts_{cluster}",
                     "type": "products",
@@ -1459,7 +1459,7 @@ def get_user_recommendations(uid: str):
             
         top_categories = sorted(category_scores.keys(), key=lambda k: category_scores[k], reverse=True)[:2]
         
-        # 2. Consultar nuestra base local ultrarrápida (SQLite) para buscar productos de esas categorías
+        # 2. Consultar nuestra base local ultrarr├ípida (SQLite) para buscar productos de esas categor├¡as
         conn = sqlite3.connect(SQLITE_DB)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
@@ -1482,7 +1482,7 @@ def get_user_recommendations(uid: str):
         results = [dict(row) for row in rows]
         
         if len(results) < 3:
-            # Si no hay suficientes productos, completamos con los más populares
+            # Si no hay suficientes productos, completamos con los m├ís populares
             return get_popular_products()
             
         return {"results": results}
@@ -1492,7 +1492,7 @@ def get_user_recommendations(uid: str):
 
 @app.get("/api/status")
 def get_system_status():
-    """Devuelve métricas del estado del sistema para el panel de administración."""
+    """Devuelve m├®tricas del estado del sistema para el panel de administraci├│n."""
     try:
         conn = sqlite3.connect(SQLITE_DB)
         conn.row_factory = sqlite3.Row
@@ -1532,7 +1532,7 @@ def get_admin_users_vectors(page: int = 1, limit: int = 10):
     """Devuelve los perfiles vectoriales de los usuarios activos calculando su afinidad actual."""
     try:
         users_ref = db.collection('users')
-        # Paginación básica en Firestore
+        # Paginaci├│n b├ísica en Firestore
         offset = (page - 1) * limit
         users = users_ref.offset(offset).limit(limit).stream()
         
@@ -1587,7 +1587,7 @@ def get_admin_users_vectors(page: int = 1, limit: int = 10):
             if len(recent_activity) > 0 or len(anchors) > 0:
                 results.append({
                     "uid": u.id,
-                    "name": udata.get('name', udata.get('email', 'Usuario Anónimo')),
+                    "name": udata.get('name', udata.get('email', 'Usuario An├│nimo')),
                     "activity_count": len(recent_activity),
                     "anchors": anchors
                 })
@@ -1689,7 +1689,7 @@ def delete_manual_anchor(anchor_id: str):
 
 @app.get("/api/admin/cerebro")
 def get_admin_cerebro(page: int = 1, limit: int = 10):
-    """Devuelve telemetría detallada del Cerebro Vectorial para el panel Admin."""
+    """Devuelve telemetr├¡a detallada del Cerebro Vectorial para el panel Admin."""
     try:
         conn = get_db_connection()
         c = conn.cursor()
@@ -1772,27 +1772,27 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             import google.generativeai as genai
             
             prompt = f'''
-            Eres un experto en taxonomía de comercio electrónico e inteligencia artificial.
-            Aquí tienes una muestra de los productos y categorías de nuestro supermercado/tienda:
-            Categorías: {categories}
+            Eres un experto en taxonom├¡a de comercio electr├│nico e inteligencia artificial.
+            Aqu├¡ tienes una muestra de los productos y categor├¡as de nuestro supermercado/tienda:
+            Categor├¡as: {categories}
             Muestra de productos: {products}
             
-            Tu tarea es generar un arreglo JSON con las mejores "Anclas" (Clústeres o categorías semánticas) para organizar este inventario en un motor de búsqueda vectorial.
+            Tu tarea es generar un arreglo JSON con las mejores "Anclas" (Cl├║steres o categor├¡as sem├ínticas) para organizar este inventario en un motor de b├║squeda vectorial.
             El arreglo JSON debe contener entre 6 y 12 objetos con la siguiente estructura exacta:
             [
               {{
                 "id": "A1",
-                "titles": ["Mascotas", "Para tus peludos", "El rincón animal", "Mascotas felices"],
+                "titles": ["Mascotas", "Para tus peludos", "El rinc├│n animal", "Mascotas felices"],
                 "subtitle": "Todo para tu mejor amigo",
                 "desc": "Alimentos y accesorios para mascotas",
                 "allowed_categories": ["Mascotas", "Veterinaria", "Animales"],
                 "exclude_rules": ["perro caliente", "salchicha"]
               }}
             ]
-            En "titles", DEBES dar un arreglo de 4 opciones de títulos atractivos y dinámicos para esta categoría.
-            En "allowed_categories", debes poner un arreglo de strings seleccionando EXACTAMENTE los nombres de las categorías proporcionadas en la lista 'Categorías' que pertenecen a esta ancla. ESTO ES UN FILTRO ESTRICTO. Solo los productos de estas categorías aparecerán en esta ancla. ¡Sé exhaustivo e incluye todas las categorías relevantes de la lista!
-            En "exclude_rules", incluye un arreglo de palabras clave que NO deben aparecer (por si hay ambigüedad).
-            Devuelve SOLO EL JSON válido, sin código de bloque extra ni markdown.
+            En "titles", DEBES dar un arreglo de 4 opciones de t├¡tulos atractivos y din├ímicos para esta categor├¡a.
+            En "allowed_categories", debes poner un arreglo de strings seleccionando EXACTAMENTE los nombres de las categor├¡as proporcionadas en la lista 'Categor├¡as' que pertenecen a esta ancla. ESTO ES UN FILTRO ESTRICTO. Solo los productos de estas categor├¡as aparecer├ín en esta ancla. ┬íS├® exhaustivo e incluye todas las categor├¡as relevantes de la lista!
+            En "exclude_rules", incluye un arreglo de palabras clave que NO deben aparecer (por si hay ambig├╝edad).
+            Devuelve SOLO EL JSON v├ílido, sin c├│digo de bloque extra ni markdown.
             '''
             models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
             response = None
@@ -1801,13 +1801,13 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                     model = genai.GenerativeModel(m)
                     response = model.generate_content(prompt)
                     if response:
-                        print(f"Modelo {m} seleccionado exitosamente para generación.")
+                        print(f"Modelo {m} seleccionado exitosamente para generaci├│n.")
                         break
                 except Exception as e:
-                    print(f"Modelo {m} falló: {e}")
+                    print(f"Modelo {m} fall├│: {e}")
                     
             if not response:
-                raise Exception("Todos los modelos generativos fallaron o no están disponibles en esta API Key.")
+                raise Exception("Todos los modelos generativos fallaron o no est├ín disponibles en esta API Key.")
                 
             raw_text = response.text.strip()
             if raw_text.startswith("```json"): raw_text = raw_text[7:]
@@ -1859,41 +1859,41 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                         conn.commit()
                         conn.commit()
                         conn.close()
-            print("[Fase 1] Auto-Generación de Anclas con IA completada exitosamente.")
+            print("[Fase 1] Auto-Generaci├│n de Anclas con IA completada exitosamente.")
             
             # --- FASE 2: CLUSTERS AMBIENTALES/FTS ---
             prompt_macro = f'''
-            Eres un experto en comportamiento del consumidor. Revisa esta muestra de productos y categorías de nuestro ecosistema:
-            Categorías: {categories}
+            Eres un experto en comportamiento del consumidor. Revisa esta muestra de productos y categor├¡as de nuestro ecosistema:
+            Categor├¡as: {categories}
             Muestra: {products}
             
-            Genera reglas dinámicas de descubrimiento, con dos objetos en un JSON: "clusters" y "time_rules".
-            Ejemplo de estructura esperada (DEVUELVE SOLO JSON VÁLIDO SIN MARKDOWN):
+            Genera reglas din├ímicas de descubrimiento, con dos objetos en un JSON: "clusters" y "time_rules".
+            Ejemplo de estructura esperada (DEVUELVE SOLO JSON V├üLIDO SIN MARKDOWN):
             {{
               "clusters": {{
                  "calor_dia": {{
-                    "titles": ["Para este calorcito", "Días soleados"],
+                    "titles": ["Para este calorcito", "D├¡as soleados"],
                     "keywords": "helado OR jugo OR pantaloneta",
-                    "storeCategories": "Heladería, Ropa",
+                    "storeCategories": "Helader├¡a, Ropa",
                     "negativeKeywords": "sopa OR chaqueta",
                     "relatedClusters": "postres"
                  }},
                  "calor_noche": {{
-                    "titles": ["Noches cálidas", "Refrescate esta noche"],
+                    "titles": ["Noches c├ílidas", "Refrescate esta noche"],
                     "keywords": "helado OR cerveza OR licor",
-                    "storeCategories": "Heladería, Bar",
+                    "storeCategories": "Helader├¡a, Bar",
                     "negativeKeywords": "sopa OR tinto",
                     "relatedClusters": "licores"
                  }},
                  "frio_dia": {{
-                    "titles": ["Días fríos", "Acompañalo con café"],
+                    "titles": ["D├¡as fr├¡os", "Acompa├▒alo con caf├®"],
                     "keywords": "cafe OR tinto OR chaqueta",
-                    "storeCategories": "Cafetería, Ropa",
+                    "storeCategories": "Cafeter├¡a, Ropa",
                     "negativeKeywords": "helado",
                     "relatedClusters": "desayuno"
                  }},
                  "frio_noche": {{
-                    "titles": ["Noches frías", "No salgas de casa"],
+                    "titles": ["Noches fr├¡as", "No salgas de casa"],
                     "keywords": "sopa OR pizza OR hamburguesa",
                     "storeCategories": "Restaurante",
                     "negativeKeywords": "helado",
@@ -1935,7 +1935,7 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                     print("[Fase 2] Clusters Ambientales generados y sincronizados en Firebase.")
             
         except Exception as e:
-            print("Error en Auto-Generación (Fase 1/2):", e)
+            print("Error en Auto-Generaci├│n (Fase 1/2):", e)
             
     background_tasks.add_task(run_generation)
     return {"status": "ok", "message": "Descubrimiento de anclas con IA iniciado en background. Espera un minuto."}
@@ -1959,15 +1959,15 @@ def reset_vectors_db():
 
 @app.post("/api/reset-clusters")
 def reset_clusters_to_defaults():
-    """Empuja los defaults del código a Firestore, reemplazando los clústeres existentes.
-    Útil cuando los clústeres en Firestore están desactualizados (sin storeCategories, etc.)."""
+    """Empuja los defaults del c├│digo a Firestore, reemplazando los cl├║steres existentes.
+    ├Ütil cuando los cl├║steres en Firestore est├ín desactualizados (sin storeCategories, etc.)."""
     if not db:
-        raise HTTPException(status_code=500, detail="Firebase no está inicializado.")
+        raise HTTPException(status_code=500, detail="Firebase no est├í inicializado.")
     try:
         doc_ref = db.collection('config').document('algorithm')
         doc_ref.set({"clusters": MACRO_CLUSTERS_CACHE}, merge=True)
         return {
-            "message": f"✅ {len(MACRO_CLUSTERS_CACHE)} clústeres reseteados a los defaults V3.2 correctamente.",
+            "message": f"Ô£à {len(MACRO_CLUSTERS_CACHE)} cl├║steres reseteados a los defaults V3.2 correctamente.",
             "clusters_pushed": list(MACRO_CLUSTERS_CACHE.keys())
         }
     except Exception as e:
@@ -1975,7 +1975,7 @@ def reset_clusters_to_defaults():
 
 # ==========================================
 # ==========================================
-# WEBHOOKS PUSH PARA ACTUALIZAR ÍNDICE (MINI-ALGOLIA)
+# WEBHOOKS PUSH PARA ACTUALIZAR ├ìNDICE (MINI-ALGOLIA)
 # ==========================================
 
 class ProductPayload(BaseModel):
@@ -2099,9 +2099,9 @@ def delta_sync_loop():
                 last_sync_str = row[0] if row else None
             
             if not last_sync_str:
-                print("[Delta Sync] Primer arranque o SQLite vacío. Sincronizando todo el catálogo...")
+                print("[Delta Sync] Primer arranque o SQLite vac├¡o. Sincronizando todo el cat├ílogo...")
                 try:
-                    sync_database() # Llamamos a la sincronización completa
+                    sync_database() # Llamamos a la sincronizaci├│n completa
                     current_time = datetime.now(timezone.utc).isoformat()
                     with sqlite_lock:
                         conn = sqlite3.connect(SQLITE_DB, timeout=10.0)
@@ -2109,7 +2109,7 @@ def delta_sync_loop():
                         c.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", ('last_sync_time', current_time))
                         conn.commit()
                         conn.close()
-                    print("[Delta Sync] Sincronización inicial completada.")
+                    print("[Delta Sync] Sincronizaci├│n inicial completada.")
                 except Exception as ex:
                     print(f"Error en full sync inicial: {ex}")
             else:
@@ -2172,7 +2172,7 @@ def delta_sync_loop():
                         c.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", ('last_sync_time', current_time))
                         conn.commit()
                         conn.close()
-                        print(f"[Delta Sync] Sincronización exitosa. Siguiente chequeo desde {current_time}.")
+                        print(f"[Delta Sync] Sincronizaci├│n exitosa. Siguiente chequeo desde {current_time}.")
 
         except Exception as e:
             # Firebase gRPC error usually happens here due to missing Composite Index
@@ -2190,7 +2190,7 @@ def cleanup_activity_loop():
     
     while True:
         try:
-            # Eliminar actividad de más de 30 días
+            # Eliminar actividad de m├ís de 30 d├¡as
             thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
             
             old_activities = db.collection_group('activity').where(filter=FieldFilter("timestamp", "<", thirty_days_ago)).limit(500).stream()
@@ -2204,7 +2204,7 @@ def cleanup_activity_loop():
                 print(f"[Cleanup] Eliminados {deleted_count} registros de actividad antiguos.")
                 
         except Exception as e:
-            print(f"[Cleanup Error]: Requiere índice. {e}")
+            print(f"[Cleanup Error]: Requiere ├¡ndice. {e}")
             
         # Esperar 24 horas (86400 segundos)
         time.sleep(86400)
