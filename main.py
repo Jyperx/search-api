@@ -1025,35 +1025,8 @@ def search(q: str = "", category: str = "", history: str = ""):
             rows_like = c.fetchall()
             results = [dict(row) for row in rows_like]
 
-        # FALLBACK 2: FUZZY (Si no encontró nada y la query tiene al menos 3 letras)
-        if len(results) == 0 and len(safe_q) >= 3:
-            c.execute("""
-                SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                       p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                       s.name as storeName
-                FROM search_index p
-                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-            """)
-            all_items = c.fetchall()
-            
-            if all_items:
-                # Extraer todos los nombres
-                names = [item["name"] for item in all_items if item["name"]]
-                # Encontrar coincidencias aproximadas (cutoff bajo para perdonar errores graves)
-                matches = difflib.get_close_matches(safe_q, names, n=15, cutoff=0.45)
-                
-                if matches:
-                    seen_ids = set([r["id"] for r in results])
-                    for item in all_items:
-                        # Si el nombre del item fue uno de los que matcheó
-                        if item["name"] in matches and item["id"] not in seen_ids:
-                            results.append(dict(item))
-                            seen_ids.add(item["id"])
-                    
-                    # Fuzzy match results appended at the end
-                    
         # VECTOR SEARCH ENHANCEMENT WITH USER PROFILE (OPTION 3)
-        if len(safe_q) >= 3 and not cluster_match:
+        if len(results) < 5 and len(safe_q) >= 3 and not cluster_match:
             query_vector = None
             for attempt in range(2):
                 try:
@@ -1112,7 +1085,7 @@ def search(q: str = "", category: str = "", history: str = ""):
                     ORDER BY distance ASC
                     LIMIT 15
                 """, (query_vector,))
-                vec_products = [dict(row) for row in c.fetchall() if row['distance'] <= 0.75]
+                vec_products = [dict(row) for row in c.fetchall() if row['distance'] <= 0.60]
                 
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
@@ -1124,7 +1097,7 @@ def search(q: str = "", category: str = "", history: str = ""):
                     ORDER BY distance ASC
                     LIMIT 5
                 """, (query_vector,))
-                vec_stores = [dict(row) for row in c.fetchall() if row['distance'] <= 0.75]
+                vec_stores = [dict(row) for row in c.fetchall() if row['distance'] <= 0.65]
                 
                 vec_all = vec_stores + vec_products
                 vec_all.sort(key=lambda x: x['distance'])
@@ -1137,6 +1110,13 @@ def search(q: str = "", category: str = "", history: str = ""):
                             del v_item['distance']
                         results.append(v_item)
                         seen_ids.add(v_item["id"])
+                        
+        # REORGANIZE RESULTS: Inject exactly up to 4 stores at the top
+        final_stores = [r for r in results if r.get('type') == 'store']
+        final_products = [r for r in results if r.get('type') != 'store']
+        top_stores = final_stores[:4]
+        remaining = final_stores[4:] + final_products
+        results = top_stores + remaining
                     
     except Exception as e:
         import traceback
@@ -1728,7 +1708,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
                 WHERE p.type = 'product' AND search_index MATCH ?
                 ORDER BY RANDOM()
-                LIMIT 40
+                LIMIT 20
             """, (fts_query,))
             
             raw_items = c.fetchall()
