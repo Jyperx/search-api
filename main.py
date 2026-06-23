@@ -99,7 +99,7 @@ MACRO_CLUSTERS_CACHE = {
     },
     "frio_noche": {
         "titles": ["Noches frías 🌧️", "No salgas de casa", "Pide a domicilio", "Para el frío de hoy"],
-        "keywords": "sopa OR caldo OR cobija OR saco OR chaqueta OR domicilio OR pizza OR hamburguesa OR comida",
+        "keywords": "sopa OR caldo OR cobija OR saco OR chaqueta OR domicilio OR pizza OR hamburguesa",
         "storeCategories": "Restaurante, Hogar, Comida Rápida",
         "negativeKeywords": "helado OR jugo OR hielo",
         "relatedClusters": "comida_rapida"
@@ -468,6 +468,8 @@ SYNONYMS = {
     "carne": ["carne", "res", "churrasco", "parrilla", "asado", "picada", "cerdo", "chuzo"],
     "empanada": ["empanada", "pastel", "arepa", "pastelito", "dedito", "tequeno", "tequeño", "pandebono", "buñuelo"],
     "sushi": ["sushi", "maki", "roll", "sashimi", "nigiri"],
+    "comida": ["comida", "almuerzo", "cena", "plato", "corrientazo", "ejecutivo", "menu", "restaurante", "sopa", "seco", "bandeja"],
+    "almuerzo": ["almuerzo", "corrientazo", "sopa", "seco", "ejecutivo", "bandeja", "menu", "comida"],
     
     # Farmacia / Salud
     "pastillas": ["pastilla", "pildora", "tableta", "medicamento", "droga", "acetaminofen", "ibuprofeno", "aspirina", "dolex", "advil"],
@@ -838,10 +840,19 @@ def build_cluster_fts_query(cluster_name, c_val, include_cluster_name=True):
     if include_cluster_name and cluster_name not in cluster_words:
         cluster_words.append(cluster_name)
         
-    parts = [f'"{w}"*' for w in cluster_words]
-    if not parts:
+    expanded_parts = []
+    for w in cluster_words:
+        if w in REVERSE_SYNONYMS:
+            root = REVERSE_SYNONYMS[w]
+            syns = SYNONYMS[root]
+            group = " OR ".join([f'"{s}"*' for s in syns])
+            expanded_parts.append(f"({group})")
+        else:
+            expanded_parts.append(f'"{w}"*')
+            
+    if not expanded_parts:
         return ""
-    base_fts = " OR ".join(parts)
+    base_fts = " OR ".join(expanded_parts)
     
     neg_keywords_str = c_val.get("negativeKeywords", "")
     neg_parts = []
