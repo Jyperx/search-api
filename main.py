@@ -214,7 +214,7 @@ def init_db():
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS product_vectors USING vec0(
             product_id TEXT PRIMARY KEY,
-            embedding float[3072]
+            embedding float[768]
         )
     ''')
     
@@ -230,7 +230,7 @@ def init_db():
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS anchor_vectors USING vec0(
             anchor_id TEXT PRIMARY KEY,
-            embedding float[3072]
+            embedding float[768]
         )
     ''')
 
