@@ -231,7 +231,7 @@ global_sync_state = {
 }
 
 @app.get("/api/admin/sync-status")
-def get_sync_status():
+async def get_sync_status():
     return global_sync_state
 
 
@@ -665,17 +665,14 @@ def sync_database():
             conn = get_db_connection()
             c = conn.cursor()
             
-            # Vaciar el índice actual reconstruyendo las tablas (necesario por cambio de dimensiones)
-            c.execute("DROP TABLE IF EXISTS search_index")
-            c.execute("DROP TABLE IF EXISTS promotions")
-            c.execute("DROP TABLE IF EXISTS product_vectors")
-            c.execute("DROP TABLE IF EXISTS store_vectors")
-            c.execute("DROP TABLE IF EXISTS anchor_vectors")
+            # Vaciar el índice sin hacer DROP TABLE para evitar interbloqueos de esquema en SQLite WAL
+            c.execute("DELETE FROM search_index")
+            c.execute("DELETE FROM promotions")
+            c.execute("DELETE FROM product_vectors")
+            c.execute("DELETE FROM store_vectors")
+            c.execute("DELETE FROM anchor_vectors")
             conn.commit()
             conn.close()
-        
-        # Volver a crear las tablas con las nuevas dimensiones (768)
-        init_db()
     
         # 1. Leer Promociones desde marketing_campaigns
         import time
