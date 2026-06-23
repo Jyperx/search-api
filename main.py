@@ -228,6 +228,10 @@ def init_db():
             section_type TEXT
         )
     ''')
+    try:
+        c.execute("ALTER TABLE anchor_metadata ADD COLUMN exclude_rules TEXT")
+    except sqlite3.OperationalError:
+        pass
     
     c.execute('''
         CREATE VIRTUAL TABLE IF NOT EXISTS anchor_vectors USING vec0(
@@ -861,7 +865,7 @@ def simulate_home_feed(req: SimulateRequest):
         
         # 2. Buscar las 3 anclas más afines al prompt
         c.execute("""
-            SELECT a.anchor_id, m.title, m.subtitle, vec_distance_cosine(a.embedding, ?) AS distance
+            SELECT a.anchor_id, m.title, m.subtitle, m.exclude_rules, vec_distance_cosine(a.embedding, ?) AS distance
             FROM anchor_vectors a
             JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
             ORDER BY distance ASC
@@ -871,7 +875,7 @@ def simulate_home_feed(req: SimulateRequest):
         
         feed_sections = []
         
-        # 3. Para cada ancla, traer 10 productos
+        # 3. Para cada ancla, traer 30 productos y filtrar los malos
         for anchor in anchors:
             c.execute("""
                 SELECT p.product_id, vec_distance_cosine(p.embedding, a.embedding) AS distance,
@@ -880,15 +884,31 @@ def simulate_home_feed(req: SimulateRequest):
                 JOIN anchor_vectors a ON a.anchor_id = ?
                 JOIN search_index s ON s.id = p.product_id
                 ORDER BY distance ASC
-                LIMIT 10
+                LIMIT 30
             """, (anchor['anchor_id'],))
             
             raw_items = c.fetchall()
             
+            import json
+            exclude_rules = []
+            if anchor.get("exclude_rules"):
+                try: exclude_rules = json.loads(anchor["exclude_rules"])
+                except: pass
+                
             items = []
             for row in raw_items:
-                if row["distance"] > 0.8: # Umbral de similitud (evitar productos basura)
+                if row["distance"] > 0.8: # Umbral de similitud
                     continue
+                
+                # FILTRO INFALIBLE: Negativas
+                name_cat = (str(row.get("name", "")) + " " + str(row.get("category", ""))).lower()
+                is_excluded = False
+                for rule in exclude_rules:
+                    if rule and rule.lower() in name_cat:
+                        is_excluded = True
+                        break
+                if is_excluded: continue
+                
                 items.append({
                     "id": row["product_id"],
                     "name": row["name"],
@@ -898,6 +918,7 @@ def simulate_home_feed(req: SimulateRequest):
                     "storeId": row["storeId"],
                     "storeName": "Tienda Simulada"
                 })
+                if len(items) >= 10: break
                 
             if items:
                 feed_sections.append({
@@ -965,7 +986,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
     if user_vector:
         try:
             c.execute("""
-                SELECT a.anchor_id, m.title, m.subtitle, vec_distance_cosine(a.embedding, ?) AS distance
+                SELECT a.anchor_id, m.title, m.subtitle, m.exclude_rules, vec_distance_cosine(a.embedding, ?) AS distance
                 FROM anchor_vectors a
                 JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
                 ORDER BY distance ASC
@@ -978,7 +999,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         try:
             # Para usuarios nuevos sin actividades, elegimos 2 anclas semánticas al azar para que exploren
             c.execute("""
-                SELECT a.anchor_id, m.title, m.subtitle
+                SELECT a.anchor_id, m.title, m.subtitle, m.exclude_rules
                 FROM anchor_vectors a
                 JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
                 ORDER BY RANDOM()
@@ -1005,16 +1026,33 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') st ON st.id = s.storeId
                 WHERE CAST(s.available AS INTEGER) = 1 AND CAST(st.isOpen AS INTEGER) = 1
                 ORDER BY distance ASC
-                LIMIT 15
+                LIMIT 40
             """, (anchor["anchor_id"],))
             
             raw_items = c.fetchall()
+            
+            import json
+            exclude_rules = []
+            if anchor.get("exclude_rules"):
+                try: exclude_rules = json.loads(anchor["exclude_rules"])
+                except: pass
+                
             store_counts = {}
             filtered_items = []
             
             for row in raw_items:
                 if row["distance"] > 0.8: # Evitar cross-contamination de clusters
                     continue
+                    
+                # FILTRO INFALIBLE: Negativas
+                name_cat = (str(row.get("name", "")) + " " + str(row.get("category", ""))).lower()
+                is_excluded = False
+                for rule in exclude_rules:
+                    if rule and rule.lower() in name_cat:
+                        is_excluded = True
+                        break
+                if is_excluded: continue
+                
                 rid = row["id"]
                 sid = row["storeId"]
                 if rid in global_seen_ids: continue
@@ -1385,11 +1423,13 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             [
               {{
                 "id": "A1",
-                "title": "Título corto y llamativo",
-                "subtitle": "Subtítulo amigable",
-                "desc": "Descripción detallada de los productos exactos que pertenecen aquí. ¡MUY IMPORTANTE! Si hay posibilidad de colisión semántica (ej: comida para perros vs perros calientes), incluye una instrucción de exclusión explícita en mayúsculas al final de la descripción (ej: EXCLUYE comida rápida)."
+                "title": "Mascotas",
+                "subtitle": "Para tus peludos",
+                "desc": "Alimentos y accesorios para mascotas",
+                "exclude_rules": ["perro caliente", "salchicha", "comida rápida", "hot dog"]
               }}
             ]
+            En "exclude_rules", incluye un arreglo estricto de strings (palabras clave o frases cortas) que NUNCA deben aparecer en los productos de esta categoría (para evitar colisiones vectoriales estúpidas, como "perro caliente" apareciendo en "mascotas"). Si no hay exclusiones obvias, déjalo vacío [].
             Devuelve SOLO EL JSON válido, sin código de bloque extra ni markdown.
             '''
             models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
@@ -1439,8 +1479,8 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                         conn = get_db_connection()
                         c = conn.cursor()
                         c.execute(
-                            "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type) VALUES (?, ?, ?, 'products')",
-                            (a['id'], a['title'], a['subtitle'])
+                            "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type, exclude_rules) VALUES (?, ?, ?, 'products', ?)",
+                            (a['id'], a['title'], a['subtitle'], json.dumps(a.get('exclude_rules', [])))
                         )
                         c.execute(
                             "INSERT INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
