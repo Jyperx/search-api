@@ -1588,7 +1588,7 @@ def get_admin_cerebro(page: int = 1, limit: int = 10):
         total_product_vectors = c.fetchone()["c"]
         
         c.execute("""
-            SELECT a.anchor_id, m.title, m.subtitle, m.section_type, a.embedding, m.is_manual
+            SELECT a.anchor_id, m.title, m.subtitle, m.section_type, a.embedding, m.is_manual, m.rule_type, m.allowed_categories, m.exclude_rules, m.titles
             FROM anchor_vectors a
             LEFT JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
         """)
@@ -1596,12 +1596,7 @@ def get_admin_cerebro(page: int = 1, limit: int = 10):
         anchors = []
         for row in c.fetchall():
             anchor_dict = dict(row)
-            cluster_name = anchor_dict.get("section_type")
-            
-            if cluster_name and cluster_name in MACRO_CLUSTERS_CACHE:
-                anchor_dict["keywords"] = MACRO_CLUSTERS_CACHE[cluster_name].get("keywords", "Generado por IA")
-            else:
-                anchor_dict["keywords"] = "Generado por IA"
+            anchor_dict["rule_type"] = anchor_dict.get("rule_type") or "general"
                 
             # Extraer vector para que el admin lo vea
             if anchor_dict.get("embedding"):
@@ -1626,7 +1621,6 @@ def get_admin_cerebro(page: int = 1, limit: int = 10):
         
         return {
             "status": "ok",
-            "fts_clusters": MACRO_CLUSTERS_CACHE,
             "vector_metrics": {
                 "total_product_vectors": total_product_vectors,
                 "anchors_count": len(anchors),
@@ -1683,18 +1677,20 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             En "exclude_rules", incluye un arreglo de palabras clave que NO deben aparecer (por si hay ambig├╝edad).
             Devuelve SOLO EL JSON v├ílido, sin c├│digo de bloque extra ni markdown.
             '''
-            models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+            models_to_try = ["gemini-1.5-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
             response = None
             for m in models_to_try:
                 try:
+                    import time
                     model = genai.GenerativeModel(m)
+                    # Use standard generate_content
                     response = model.generate_content(prompt)
                     if response:
-                        print(f"Modelo {m} seleccionado exitosamente para generaci├│n.")
+                        print(f"Modelo {m} seleccionado exitosamente para generación.")
                         break
                 except Exception as e:
-                    print(f"Modelo {m} fall├│: {e}")
-                    
+                    print(f"Modelo {m} falló: {e}")
+                    time.sleep(2)
             if not response:
                 raise Exception("Todos los modelos generativos fallaron o no est├ín disponibles en esta API Key.")
                 
@@ -1807,11 +1803,13 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             ambient_response = None
             for m in models_to_try:
                 try:
+                    import time
                     model = genai.GenerativeModel(m)
                     ambient_response = model.generate_content(prompt_ambient)
                     if ambient_response: break
                 except Exception as e:
-                    pass
+                    print(f"Modelo {m} falló en Fase 2: {e}")
+                    time.sleep(2)
             
             if ambient_response:
                 r_text = ambient_response.text.strip()
