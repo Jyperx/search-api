@@ -54,7 +54,13 @@ else:
     print(f"ADVERTENCIA: No se encontró '{SERVICE_ACCOUNT_FILE}' ni la variable FIREBASE_SERVICE_ACCOUNT. El endpoint /api/sync fallará.")
 
 # --- ACTIVE CACHE PARA EL ALGORITMO V3.2 ---
-TIME_RULES_CACHE = []
+TIME_RULES_CACHE = [
+    {"startHour": 5, "endHour": 10, "cluster": "desayuno", "scoreBoost": 5.0},
+    {"startHour": 5, "endHour": 10, "cluster": "comida_rapida", "scoreBoost": -3.0},
+    {"startHour": 11, "endHour": 14, "cluster": "almuerzo", "scoreBoost": 5.0},
+    {"startHour": 18, "endHour": 23, "cluster": "comida_rapida", "scoreBoost": 3.0},
+    {"startHour": 18, "endHour": 23, "cluster": "licores", "scoreBoost": 2.0},
+]
 MACRO_CLUSTERS_CACHE = {
     "desayuno": {
         "titles": ["Empieza el día con energía", "Mañanas deliciosas", "Despierta con sabor", "Para el desayuno"],
@@ -62,6 +68,27 @@ MACRO_CLUSTERS_CACHE = {
         "storeCategories": "Cafetería, Panaderia, Restaurante de desayunos, Desayunos",
         "negativeKeywords": "",
         "relatedClusters": "comida_rapida"
+    },
+    "almuerzo": {
+        "titles": ["Hora de almorzar", "Almuerzos Ejecutivos", "Para el medio día", "Almuerzo Casero"],
+        "keywords": "almuerzo OR corrientazo OR sopa OR arroz OR carne OR pollo OR principio OR bandeja OR menu OR ejecutivo",
+        "storeCategories": "Restaurante, Comida Casera, Asadero, Almuerzos",
+        "negativeKeywords": "desayuno OR pan OR cafe",
+        "relatedClusters": "saludable"
+    },
+    "clima_calor": {
+        "titles": ["Para este calorcito ☀️", "Refréscate", "Tardes soleadas", "Bebidas heladas"],
+        "keywords": "helado OR jugo OR paleta OR cerveza OR granizado OR frappe OR ensalada OR fruta OR frio OR refresco",
+        "storeCategories": "Heladería, Jugos, Bar, Licorería",
+        "negativeKeywords": "sopa OR tinto OR cafe OR caliente OR caldo",
+        "relatedClusters": "postres"
+    },
+    "clima_frio": {
+        "titles": ["Para el frío 🌧️", "Acompáñalo con café", "Entra en calor", "Ideal para la lluvia"],
+        "keywords": "cafe OR tinto OR sopa OR caldo OR chocolate OR empanada OR pan OR postre OR tamal OR changua",
+        "storeCategories": "Cafetería, Panaderia, Restaurante",
+        "negativeKeywords": "helado OR hielo OR cerveza",
+        "relatedClusters": "desayuno"
     },
     "comida_rapida": {
         "titles": ["Antojos Rápidos", "Para calmar el hambre", "Pecados deliciosos", "Tus favoritos"],
@@ -234,6 +261,10 @@ def init_db():
         pass
     try:
         c.execute("ALTER TABLE anchor_metadata ADD COLUMN allowed_categories TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE anchor_metadata ADD COLUMN titles TEXT")
     except sqlite3.OperationalError:
         pass
     
@@ -852,6 +883,8 @@ def get_promotions():
 
 class HomeFeedRequest(BaseModel):
     activities: List[dict] = []
+    lat: float = None
+    lng: float = None
 
 class SimulateRequest(BaseModel):
     prompt: str
@@ -878,7 +911,7 @@ def simulate_home_feed(req: SimulateRequest):
         
         # 2. Buscar las 3 anclas más afines al prompt
         c.execute("""
-            SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, vec_distance_cosine(a.embedding, ?) AS distance
+            SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles, vec_distance_cosine(a.embedding, ?) AS distance
             FROM anchor_vectors a
             JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
             ORDER BY distance ASC
@@ -945,9 +978,19 @@ def simulate_home_feed(req: SimulateRequest):
                 if len(items) >= 10: break
                 
             if items:
+                import random
+                import json
+                anchor_title = anchor.get("title", "Explorar")
+                if anchor.get("titles"):
+                    try:
+                        titles_list = json.loads(anchor["titles"])
+                        if titles_list:
+                            anchor_title = random.choice(titles_list)
+                    except: pass
+                    
                 feed_sections.append({
                     "id": f"sim_anchor_{anchor['anchor_id']}",
-                    "title": anchor['title'],
+                    "title": anchor_title,
                     "subtitle": anchor['subtitle'],
                     "section_type": "interest",
                     "items": items
@@ -1010,7 +1053,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
     if user_vector:
         try:
             c.execute("""
-                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, vec_distance_cosine(a.embedding, ?) AS distance
+                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles, vec_distance_cosine(a.embedding, ?) AS distance
                 FROM anchor_vectors a
                 JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
                 ORDER BY distance ASC
@@ -1020,7 +1063,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             
             # 2.5 Inyección de Exploración
             c.execute("""
-                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules
+                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles
                 FROM anchor_vectors a
                 JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
                 WHERE a.anchor_id NOT IN (?, ?)
@@ -1040,7 +1083,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         try:
             # Para usuarios nuevos sin actividades, elegimos 2 anclas semánticas al azar para que exploren
             c.execute("""
-                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules
+                SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles
                 FROM anchor_vectors a
                 JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
                 ORDER BY RANDOM()
@@ -1115,7 +1158,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 views = float(row.get("views") or 0)
                 
                 popularity = math.log1p(purchases + likes * 0.5) / 10.0
-                novelty = 0.2 if (purchases == 0 and views < 10) else 0.0
+                novelty = 0.2 if (purchases == 0 and views <= 15) else (-0.3 if purchases == 0 and views > 50 else 0.0)
                 sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
                 
                 row["final_score"] = (affinity * 0.6) + (popularity * 0.2) + (novelty * 0.1) + (sale_boost * 0.1)
@@ -1141,10 +1184,20 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                     
             # Fallback de Anclas: Añadimos todas las que tengan suficientes productos.
             if len(filtered_items) >= 2:
+                import random
+                import json
+                anchor_title = anchor.get("title", "Explorar")
+                if anchor.get("titles"):
+                    try:
+                        titles_list = json.loads(anchor["titles"])
+                        if titles_list:
+                            anchor_title = random.choice(titles_list)
+                    except: pass
+                    
                 feed_sections.append({
                     "id": f"dyn_vector_{anchor['anchor_id']}",
                     "type": "products",
-                    "title": anchor["title"],
+                    "title": anchor_title,
                     "subtitle": anchor["subtitle"],
                     "items": filtered_items
                 })
@@ -1173,6 +1226,21 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 cluster_scores[rule_cluster] += boost
             elif sh > eh and (current_hour >= sh or current_hour <= eh):
                 cluster_scores[rule_cluster] += boost
+                
+    # 4.1. Reglas Ambientales (Clima Open-Meteo)
+    if req.lat is not None and req.lng is not None:
+        try:
+            import requests
+            w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={req.lat}&longitude={req.lng}&current_weather=true", timeout=2).json()
+            if "current_weather" in w_res:
+                temp = w_res["current_weather"].get("temperature", 20)
+                code = w_res["current_weather"].get("weathercode", 0)
+                if temp >= 24:
+                    cluster_scores["clima_calor"] = cluster_scores.get("clima_calor", 0) + 15.0
+                elif temp <= 16 or code >= 50: # Lluvia
+                    cluster_scores["clima_frio"] = cluster_scores.get("clima_frio", 0) + 15.0
+        except Exception as e:
+            print(f"[Weather] Error: {e}")
                 
     sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
     top_clusters = sorted_clusters[:2]
@@ -1219,7 +1287,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 views = float(row.get("views") or 0)
                 
                 popularity = math.log1p(purchases + likes * 0.5) / 10.0
-                novelty = 0.2 if (purchases == 0 and views < 10) else 0.0
+                novelty = 0.2 if (purchases == 0 and views <= 15) else (-0.3 if purchases == 0 and views > 50 else 0.0)
                 sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
                 random_noise = (abs(hash(rid)) % 100) / 1000.0 # 0.0 to 0.1 noise
                 
@@ -1512,13 +1580,14 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             [
               {{
                 "id": "A1",
-                "title": "Mascotas",
-                "subtitle": "Para tus peludos",
+                "titles": ["Mascotas", "Para tus peludos", "El rincón animal", "Mascotas felices"],
+                "subtitle": "Todo para tu mejor amigo",
                 "desc": "Alimentos y accesorios para mascotas",
                 "allowed_categories": ["Mascotas", "Veterinaria", "Animales"],
                 "exclude_rules": ["perro caliente", "salchicha"]
               }}
             ]
+            En "titles", DEBES dar un arreglo de 4 opciones de títulos atractivos y dinámicos para esta categoría.
             En "allowed_categories", debes poner un arreglo de strings seleccionando EXACTAMENTE los nombres de las categorías proporcionadas en la lista 'Categorías' que pertenecen a esta ancla. ESTO ES UN FILTRO ESTRICTO. Solo los productos de estas categorías aparecerán en esta ancla. ¡Sé exhaustivo e incluye todas las categorías relevantes de la lista!
             En "exclude_rules", incluye un arreglo de palabras clave que NO deben aparecer (por si hay ambigüedad).
             Devuelve SOLO EL JSON válido, sin código de bloque extra ni markdown.
@@ -1554,7 +1623,8 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                 conn.close()
                 
             for a in anchors_data:
-                text = f"{a['title']} - {a['desc']}"
+                primary_title = a.get('titles', [a.get('title', 'Explorar')])[0]
+                text = f"{primary_title} - {a.get('desc', '')}"
                 import time
                 res = None
                 for attempt in range(3):
@@ -1570,8 +1640,8 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                         conn = get_db_connection()
                         c = conn.cursor()
                         c.execute(
-                            "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type, allowed_categories, exclude_rules) VALUES (?, ?, ?, 'products', ?, ?)",
-                            (a['id'], a['title'], a['subtitle'], json.dumps(a.get('allowed_categories', [])), json.dumps(a.get('exclude_rules', [])))
+                            "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type, allowed_categories, exclude_rules, titles) VALUES (?, ?, ?, 'products', ?, ?, ?)",
+                            (a['id'], primary_title, a.get('subtitle', ''), json.dumps(a.get('allowed_categories', [])), json.dumps(a.get('exclude_rules', [])), json.dumps(a.get('titles', [])))
                         )
                         c.execute(
                             "INSERT INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
