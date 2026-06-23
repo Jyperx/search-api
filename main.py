@@ -10,6 +10,8 @@ import json
 import difflib
 import random
 from datetime import datetime, timezone
+import threading
+sqlite_lock = threading.Lock()
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -270,11 +272,11 @@ def async_index_product_vector(p_id, name, category, description):
     vector_bytes = generate_product_embedding(name, category, description)
     if vector_bytes:
         try:
-            from main import sqlite_lock
             with sqlite_lock:
                 conn = get_db_connection()
                 c = conn.cursor()
-                c.execute("INSERT OR REPLACE INTO product_vectors (product_id, embedding) VALUES (?, ?)", (p_id, vector_bytes))
+                c.execute("DELETE FROM product_vectors WHERE product_id = ?", (p_id,))
+                c.execute("INSERT INTO product_vectors (product_id, embedding) VALUES (?, ?)", (p_id, vector_bytes))
                 conn.commit()
                 conn.close()
         except Exception as e:
@@ -1358,9 +1360,6 @@ def reset_clusters_to_defaults():
 # ==========================================
 # WEBHOOKS PUSH PARA ACTUALIZAR ÍNDICE (MINI-ALGOLIA)
 # ==========================================
-import threading
-
-sqlite_lock = threading.Lock()
 
 class ProductPayload(BaseModel):
     id: str
