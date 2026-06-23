@@ -981,14 +981,62 @@ def search(q: str = ""):
                 matches = difflib.get_close_matches(safe_q, names, n=15, cutoff=0.45)
                 
                 if matches:
-                    seen_ids = set()
+                    seen_ids = set([r["id"] for r in results])
                     for item in all_items:
                         # Si el nombre del item fue uno de los que matcheó
                         if item["name"] in matches and item["id"] not in seen_ids:
                             results.append(dict(item))
                             seen_ids.add(item["id"])
                     
-                    results.sort(key=lambda x: matches.index(x["name"]) if x["name"] in matches else 999)
+                    # Fuzzy match results appended at the end
+                    
+        # VECTOR SEARCH ENHANCEMENT
+        if len(safe_q) >= 3 and not cluster_match:
+            query_vector = None
+            for attempt in range(2):
+                try:
+                    res = genai.embed_content(model=EMBEDDING_MODEL, content=safe_q, task_type="retrieval_document")
+                    query_vector = sqlite_vec.serialize_float32(res['embedding'])
+                    break
+                except Exception as e:
+                    print("Error vectorizando search query:", e)
+                    
+            if query_vector:
+                c.execute("""
+                    SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                           p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                           s.name as storeName, vec_distance_cosine(v.embedding, ?) AS distance
+                    FROM product_vectors v
+                    JOIN search_index p ON p.id = v.product_id
+                    LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    ORDER BY distance ASC
+                    LIMIT 15
+                """, (query_vector,))
+                vec_products = [dict(row) for row in c.fetchall()]
+                
+                c.execute("""
+                    SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                           p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                           s.name as storeName, vec_distance_cosine(v.embedding, ?) AS distance
+                    FROM store_vectors v
+                    JOIN search_index p ON p.id = v.store_id
+                    LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    ORDER BY distance ASC
+                    LIMIT 5
+                """, (query_vector,))
+                vec_stores = [dict(row) for row in c.fetchall()]
+                
+                vec_all = vec_stores + vec_products
+                vec_all.sort(key=lambda x: x['distance'])
+                
+                seen_ids = set([r["id"] for r in results])
+                for v_item in vec_all:
+                    if v_item["id"] not in seen_ids:
+                        # Eliminar el campo 'distance' para no ensuciar la respuesta final
+                        if 'distance' in v_item:
+                            del v_item['distance']
+                        results.append(v_item)
+                        seen_ids.add(v_item["id"])
                     
     except Exception as e:
         print("Error de búsqueda:", e)
