@@ -136,6 +136,23 @@ def init_db():
         c.execute("ALTER TABLE anchor_metadata ADD COLUMN rule_type TEXT DEFAULT 'general'")
     except sqlite3.OperationalError:
         pass
+
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS promotions (
+            id TEXT PRIMARY KEY,
+            type TEXT,
+            targetUrl TEXT,
+            imageUrl TEXT,
+            storeId TEXT,
+            emoji TEXT,
+            title TEXT,
+            subtitle TEXT,
+            bg TEXT,
+            titleColor TEXT,
+            subtitleColor TEXT
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
@@ -1643,6 +1660,7 @@ def delta_sync_loop():
                 c.execute("SELECT value FROM metadata WHERE key = 'last_sync_time'")
                 row = c.fetchone()
                 last_sync_str = row[0] if row else None
+                conn.close()
             
             if not last_sync_str:
                 print("[Delta Sync] Primer arranque o SQLite vacío. Sincronizando todo el catálogo...")
