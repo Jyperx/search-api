@@ -384,13 +384,13 @@ for root, alts in SYNONYMS.items():
 # ==========================================
 
 ANCHORS = [
-    {"id": "A1", "title": "Gustos Culposos", "subtitle": "Para pecar sin remordimiento", "desc": "Comida rápida, hamburguesas grasosas, postres dulces, frituras, pizza, donas."},
+    {"id": "A1", "title": "Gustos Culposos", "subtitle": "Para pecar sin remordimiento", "desc": "Comida rápida para humanos, hamburguesas, hot dogs, perros calientes, postres dulces, frituras, pizza, donas."},
     {"id": "A2", "title": "Cena Rápida", "subtitle": "Sin complicaciones", "desc": "Comida fácil de preparar o lista para comer en la noche, sándwiches, ensaladas ligeras, sushi, wraps."},
     {"id": "A3", "title": "Desayuno Energético", "subtitle": "Empieza el día con todo", "desc": "Café, huevos, pan, arepas, jugo de naranja, tostadas, tocino."},
     {"id": "A4", "title": "Mercado Fresco", "subtitle": "Para la alacena", "desc": "Frutas frescas, verduras, lácteos, carnes, abarrotes, despensa."},
     {"id": "A5", "title": "Farmacia y Cuidado", "subtitle": "Salud y bienestar", "desc": "Medicamentos, vitaminas, cuidado personal, aseo, primeros auxilios."},
-    {"id": "A6", "title": "Mascotas Felices", "subtitle": "Para tu peludo", "desc": "Comida para perros, gatos, arena, juguetes, snacks para mascotas."},
-    {"id": "A7", "title": "Tecnología", "subtitle": "Gadgets y repuestos", "desc": "Celulares, cargadores, audífonos, pantallas, cables, accesorios."},
+    {"id": "A6", "title": "Mascotas Felices", "subtitle": "Para tu peludo", "desc": "Alimento y accesorios exclusivos para animales. Croquetas para caninos y felinos, arena, juguetes, snacks para mascotas. (EXCLUYE y rechaza comida rápida humana)."},
+    {"id": "A7", "title": "Tecnología", "subtitle": "Gadgets y repuestos", "desc": "Celulares, cargadores, audífonos, pantallas, cables, accesorios electrónicos."},
     {"id": "A8", "title": "Hogar y Ferretería", "subtitle": "Arregla tu casa", "desc": "Herramientas, bombillos, cintas, plomería, tornillos, pinturas."}
 ]
 
