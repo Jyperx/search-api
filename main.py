@@ -77,17 +77,17 @@ MACRO_CLUSTERS_CACHE = {
         "relatedClusters": "saludable"
     },
     "clima_calor": {
-        "titles": ["Para este calorcito ☀️", "Refréscate", "Tardes soleadas", "Bebidas heladas"],
-        "keywords": "helado OR jugo OR paleta OR cerveza OR granizado OR frappe OR ensalada OR fruta OR frio OR refresco",
-        "storeCategories": "Heladería, Jugos, Bar, Licorería",
-        "negativeKeywords": "sopa OR tinto OR cafe OR caliente OR caldo",
+        "titles": ["Para este calorcito ☀️", "Refréscate", "Tardes soleadas", "Ponte cómodo y fresco"],
+        "keywords": "helado OR jugo OR paleta OR cerveza OR granizado OR frappe OR ensalada OR fruta OR frio OR refresco OR gafas OR pantaloneta OR camiseta OR vestido OR bermuda OR sandalias",
+        "storeCategories": "Heladería, Jugos, Bar, Licorería, Ropa, Boutique",
+        "negativeKeywords": "sopa OR tinto OR cafe OR caliente OR caldo OR chaqueta OR abrigo",
         "relatedClusters": "postres"
     },
     "clima_frio": {
-        "titles": ["Para el frío 🌧️", "Acompáñalo con café", "Entra en calor", "Ideal para la lluvia"],
-        "keywords": "cafe OR tinto OR sopa OR caldo OR chocolate OR empanada OR pan OR postre OR tamal OR changua",
-        "storeCategories": "Cafetería, Panaderia, Restaurante",
-        "negativeKeywords": "helado OR hielo OR cerveza",
+        "titles": ["Para el frío 🌧️", "Acompáñalo con café", "Entra en calor", "Protégete del clima"],
+        "keywords": "cafe OR tinto OR sopa OR caldo OR chocolate OR empanada OR pan OR postre OR tamal OR changua OR chaqueta OR sueter OR bufanda OR abrigo OR cobija OR saco",
+        "storeCategories": "Cafetería, Panaderia, Restaurante, Ropa, Hogar",
+        "negativeKeywords": "helado OR hielo OR cerveza OR pantaloneta",
         "relatedClusters": "desayuno"
     },
     "comida_rapida": {
@@ -168,6 +168,11 @@ MACRO_CLUSTERS_CACHE = {
         "relatedClusters": "comida_rapida, licores"
     }
 }
+
+# --- WEATHER CACHE (IN-MEMORY) ---
+# Almacena el clima por ubicación redondeada (aprox 10km) para no quemar la API.
+# Formato: {"lat_lng": {"temp": 20, "code": 0, "time": timestamp}}
+WEATHER_CACHE_STORE = {}
 
 def on_algorithm_config_snapshot(doc_snapshot, changes, read_time):
     global MACRO_CLUSTERS_CACHE
@@ -1227,18 +1232,33 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             elif sh > eh and (current_hour >= sh or current_hour <= eh):
                 cluster_scores[rule_cluster] += boost
                 
-    # 4.1. Reglas Ambientales (Clima Open-Meteo)
+    # 4.1. Reglas Ambientales (Clima Open-Meteo con Caché)
     if req.lat is not None and req.lng is not None:
         try:
             import requests
-            w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={req.lat}&longitude={req.lng}&current_weather=true", timeout=2).json()
-            if "current_weather" in w_res:
-                temp = w_res["current_weather"].get("temperature", 20)
-                code = w_res["current_weather"].get("weathercode", 0)
-                if temp >= 24:
-                    cluster_scores["clima_calor"] = cluster_scores.get("clima_calor", 0) + 15.0
-                elif temp <= 16 or code >= 50: # Lluvia
-                    cluster_scores["clima_frio"] = cluster_scores.get("clima_frio", 0) + 15.0
+            import time
+            lat_key = round(req.lat, 1)
+            lng_key = round(req.lng, 1)
+            loc_key = f"{lat_key}_{lng_key}"
+            
+            now_ts = time.time()
+            if loc_key in WEATHER_CACHE_STORE and (now_ts - WEATHER_CACHE_STORE[loc_key]["time"] < 3600):
+                # Usar caché (vigencia de 1 hora)
+                temp = WEATHER_CACHE_STORE[loc_key]["temp"]
+                code = WEATHER_CACHE_STORE[loc_key]["code"]
+            else:
+                w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat_key}&longitude={lng_key}&current_weather=true", timeout=2).json()
+                if "current_weather" in w_res:
+                    temp = w_res["current_weather"].get("temperature", 20)
+                    code = w_res["current_weather"].get("weathercode", 0)
+                    WEATHER_CACHE_STORE[loc_key] = {"temp": temp, "code": code, "time": now_ts}
+                else:
+                    temp, code = 20, 0
+                    
+            if temp >= 24:
+                cluster_scores["clima_calor"] = cluster_scores.get("clima_calor", 0) + 15.0
+            elif temp <= 16 or code >= 50: # Lluvia
+                cluster_scores["clima_frio"] = cluster_scores.get("clima_frio", 0) + 15.0
         except Exception as e:
             print(f"[Weather] Error: {e}")
                 
