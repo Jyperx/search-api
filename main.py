@@ -636,11 +636,16 @@ def do_seed_anchors():
             
             cat_id = "DYN_CAT_" + hashlib.md5(cat_name.encode()).hexdigest()[:8]
             
+            # BUG FIX: Guardar titles y allowed_categories para que el feed use
+            # títulos variados y filtros de categoría correctos al igual que las anclas manuales.
+            import json as _json
             dynamic_anchors.append({
                 "id": cat_id,
                 "title": f"Todo en {cat_name.title()}",
                 "subtitle": f"Tus favoritos de {cat_name.lower()}",
-                "desc": f"Catálogo completo de {cat_name.lower()} y similares."
+                "desc": f"Catálogo completo de {cat_name.lower()} y similares.",
+                "titles": _json.dumps([f"Todo en {cat_name.title()}", f"Lo mejor de {cat_name.title()}", f"Tus favoritos de {cat_name.title()}", f"Explora {cat_name.title()}"]),
+                "allowed_categories": _json.dumps([cat_name.lower()])
             })
             
         all_anchors = dynamic_anchors + ENV_ANCHORS
@@ -667,8 +672,8 @@ def do_seed_anchors():
                     conn = get_db_connection()
                     c = conn.cursor()
                     c.execute(
-                        "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type) VALUES (?, ?, ?, 'products')",
-                        (a['id'], a['title'], a['subtitle'])
+                        "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type, titles, allowed_categories) VALUES (?, ?, ?, 'products', ?, ?)",
+                        (a['id'], a['title'], a['subtitle'], a.get('titles'), a.get('allowed_categories'))
                     )
                     c.execute(
                         "INSERT INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
@@ -1092,13 +1097,18 @@ def search(q: str = "", category: str = "", history: str = ""):
             
             rows_like = c.fetchall()
             results = [dict(row) for row in rows_like]
+            # BUG FIX: El LIKE tampoco es exact_match; el banner "no encontramos X" debe salir igualmente.
+            if results:
+                exact_match = False
 
         # VECTOR SEARCH ENHANCEMENT WITH USER PROFILE (OPTION 3)
         if len(results) < 5 and len(safe_q) >= 3 and not cluster_match:
             query_vector = None
             for attempt in range(2):
                 try:
-                    res = genai.embed_content(model=EMBEDDING_MODEL, content=safe_q, task_type="retrieval_document")
+                    # BUG FIX: Las búsquedas de usuario deben usar retrieval_query (no retrieval_document)
+                    # para que el modelo de embedding de Gemini optimice la distancia semántica correctamente.
+                    res = genai.embed_content(model=EMBEDDING_MODEL, content=safe_q, task_type="retrieval_query")
                     raw_query_vector = res['embedding'][:768]
                     
                     # Interpolar con el Perfil del Usuario
@@ -1952,16 +1962,34 @@ def get_user_recommendations(uid: str):
     try:
         from datetime import datetime, timezone
         import time
-        now_ms = time.time() * 1000
-        def calc_decay(ts_iso):
-            return 1.0 # Simple sin decaimiento para simplificar
+        now = datetime.now(timezone.utc)
+        current_hour = (now.hour - 5) % 24
+        
+        def calc_decay(ts):
+            if not ts: return 1.0
+            try:
+                if isinstance(ts, str):
+                    ts = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                elif isinstance(ts, (int, float)):
+                    ts = datetime.fromtimestamp(ts/1000 if ts > 10000000000 else ts, tz=timezone.utc)
+                else: return 1.0
+                days_ago = (now - ts).days
+                if days_ago == 0: return 3.0
+                elif days_ago > 7: return 0.2
+                elif days_ago > 30: return 0.0
+                return 1.0
+            except: return 1.0
             
         activities = []
         if db:
-            activities_stream = db.collection('users').document(uid).collection('activity').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(50).stream()
-            activities = list(activities_stream)
+            # BUG FIX: La actividad se guarda en el campo 'recent_activity' del documento del usuario,
+            # NO en una subcolección 'activity'. El código anterior siempre retornaba vector vacío.
+            user_doc = db.collection('users').document(uid).get()
+            if user_doc.exists:
+                user_data = user_doc.to_dict() or {}
+                activities = user_data.get('recent_activity', [])
             
-        user_vector = calculate_user_vector(activities, calc_decay, current_hour=datetime.now().hour) if activities else None
+        user_vector = calculate_user_vector(activities, calc_decay, current_hour=current_hour) if activities else None
 
         conn = sqlite3.connect(SQLITE_DB)
         conn.row_factory = sqlite3.Row
