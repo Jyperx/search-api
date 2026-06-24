@@ -1883,6 +1883,57 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
     except Exception as e:
         print(f"[Anti-Bubble] Error: {e}")
         
+    # 5.5 Descubre lo Nuevo (Garantía de visibilidad 100%)
+    try:
+        placeholders = ','.join('?' * len(global_seen_ids)) if global_seen_ids else "''"
+        seen_tuple = tuple(global_seen_ids)
+        query = f"""
+            SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                   p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                   s.name as storeName
+            FROM search_index p
+            LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+            WHERE p.type = 'product' AND CAST(p.available AS INTEGER) = 1 AND CAST(s.isOpen AS INTEGER) = 1
+            {"AND p.id NOT IN (" + placeholders + ")" if global_seen_ids else ""}
+            ORDER BY RANDOM()
+            LIMIT 30
+        """
+        c.execute(query, seen_tuple)
+        raw_new = c.fetchall()
+        new_candidates = []
+        import random
+        for raw_row in raw_new:
+            row = dict(raw_row)
+            likes = float(row.get("likes") or 0)
+            row["score"] = likes * 0.5 + random.uniform(0, 10)
+            new_candidates.append(row)
+            
+        new_candidates.sort(key=lambda x: x["score"], reverse=True)
+        
+        store_counts_new = {}
+        filtered_new = []
+        for row in new_candidates:
+            sid = row["storeId"]
+            if store_counts_new.get(sid, 0) >= 3: continue
+            filtered_new.append(row)
+            global_seen_ids.add(row["id"])
+            store_counts_new[sid] = store_counts_new.get(sid, 0) + 1
+            if len(filtered_new) >= 10: break
+            
+        if len(filtered_new) > 0:
+            insert_pos = 1 if len(feed_sections) >= 1 else 0
+            feed_sections.insert(insert_pos, {
+                "id": "dyn_descubre_nuevo",
+                "type": "products",
+                "title": "Descubre lo Nuevo",
+                "subtitle": "Selección fresca de nuestro catálogo",
+                "items": filtered_new
+            })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"[Descubre lo Nuevo] Error: {e}")
+        
     if not selected_clusters:
         selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
         
@@ -2478,116 +2529,183 @@ def get_admin_cerebro(page: int = 1, store_page: int = 1, anchor_page: int = 1, 
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/admin/auto-generate-anchors")
-def auto_generate_anchors(background_tasks: BackgroundTasks):
-    def run_generation():
-        global global_sync_state
-        global_sync_state["is_syncing"] = True
-        global_sync_state["total_products"] = 0
-        global_sync_state["completed_products"] = 0
-        global_sync_state["status"] = "Analizando taxonomía con Gemini..."
-        try:
-            with sqlite_lock:
-                conn = get_db_connection()
-                c = conn.cursor()
-                c.execute("SELECT DISTINCT category FROM search_index WHERE type='product'")
-                categories = [row['category'] for row in c.fetchall() if row['category']]
-                c.execute("SELECT name, description, category FROM search_index WHERE type='product' ORDER BY RANDOM() LIMIT 100")
-                products = [dict(row) for row in c.fetchall()]
-                conn.close()
+async def run_dynamic_macro_clusters_sync():
+    global db
+    if not db: return
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT DISTINCT category FROM search_index WHERE type='product'")
+            categories = [row['category'] for row in c.fetchall() if row['category']]
+            conn.close()
+            
+        import json
+        import google.generativeai as genai
+        
+        prompt = f'''
+        Eres un experto en comportamiento del consumidor y e-commerce.
+        Actualmente nuestro supermercado tiene estas categorías reales: {categories}
+        Crea un arreglo JSON que mapee situaciones de clima/hora a clústeres de búsqueda.
+        Queremos unos 5-8 clústeres FTS (Full-Text Search) que se ajusten a ESTAS categorías.
+        Formato requerido EXACTO (solo este JSON, sin markdown):
+        {{
+            "clusters": {{
+                "frio_noche": {{
+                    "titles": ["Directo a tu cama", "Para el frío"],
+                    "keywords": "pizza OR hamburguesa OR sopa",
+                    "storeCategories": "Restaurante, Comida Rápida",
+                    "negativeKeywords": "helado",
+                    "relatedClusters": "postres"
+                }}
+            }}
+        }}
+        Crea clústeres como: calor_dia, calor_noche, frio_dia, frio_noche, manana, tarde.
+        '''
+        models_to_try = ["gemini-2.5-flash", "gemini-3.1-flash-lite", "gemini-2.0-flash", "gemini-1.5-pro"]
+        response = None
+        for m in models_to_try:
+            try:
+                model = genai.GenerativeModel(m)
+                response = model.generate_content(prompt)
+                if response: break
+            except Exception: pass
+            
+        if not response: return
+        raw_text = response.text.strip()
+        if raw_text.startswith("```json"): raw_text = raw_text[7:]
+        if raw_text.startswith("```"): raw_text = raw_text[3:]
+        if raw_text.endswith("```"): raw_text = raw_text[:-3]
+        
+        new_config = json.loads(raw_text.strip())
+        if "clusters" in new_config:
+            db.collection("config").document("algorithm").set({"clusters": new_config["clusters"]}, merge=True)
+            print("[Dynamic FTS] Nuevos Macro Clusters generados y guardados en Firebase.")
+    except Exception as e:
+        print(f"[Dynamic FTS Error]: {e}")
+
+async def run_auto_generate_anchors_sync():
+    global global_sync_state
+    global_sync_state["is_syncing"] = True
+    global_sync_state["total_products"] = 0
+    global_sync_state["completed_products"] = 0
+    global_sync_state["status"] = "Analizando taxonomía con Gemini..."
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("SELECT DISTINCT category FROM search_index WHERE type='product'")
+            categories = [row['category'] for row in c.fetchall() if row['category']]
+            c.execute("SELECT name, description, category FROM search_index WHERE type='product' ORDER BY RANDOM() LIMIT 100")
+            products = [dict(row) for row in c.fetchall()]
+            conn.close()
+            
+        import json
+        import google.generativeai as genai
+        
+        prompt = f'''
+        Eres un experto en taxonomía de comercio electrónico e inteligencia artificial.
+        Aquí tienes una muestra de los productos y categorías de nuestro supermercado/tienda:
+        Categorías: {categories}
+        Muestra de productos: {products}
+        
+        Tu tarea es generar un arreglo JSON con las mejores "Anclas" (Clústeres o categorías semánticas) para organizar este inventario en un motor de búsqueda vectorial.
+        El arreglo JSON debe contener entre 6 y 12 objetos con la siguiente estructura exacta:
+        [
+          {{
+            "id": "A1",
+            "titles": ["Mascotas", "Para tus peludos", "El rincón animal", "Mascotas felices"],
+            "subtitle": "Todo para tu mejor amigo",
+            "desc": "Alimentos y accesorios para mascotas",
+            "allowed_categories": ["Mascotas", "Veterinaria", "Animales"],
+            "exclude_rules": ["perro caliente", "salchicha"]
+          }}
+        ]
+        En "titles", DEBES dar un arreglo de 4 opciones de títulos atractivos y dinámicos para esta categoría.
+        En "allowed_categories", debes poner un arreglo de strings seleccionando EXACTAMENTE los nombres de las categorías proporcionadas en la lista 'Categorías' que pertenecen a esta ancla. ESTO ES UN FILTRO ESTRICTO. Solo los productos de estas categorías aparecerán en esta ancla. ¡Sé exhaustivo e incluye todas las categorías relevantes de la lista!
+        En "exclude_rules", incluye un arreglo de palabras clave que NO deben aparecer (por si hay ambigüedad).
+        Devuelve SOLO EL JSON válido, sin código de bloque extra ni markdown.
+        '''
+        models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
+        response = None
+        for m in models_to_try:
+            try:
+                model = genai.GenerativeModel(m)
+                response = model.generate_content(prompt)
+                if response:
+                    print(f"Modelo {m} seleccionado exitosamente para generación.")
+                    break
+            except Exception as e:
+                print(f"Modelo {m} falló: {e}")
                 
-            import json
-            import google.generativeai as genai
+        if not response:
+            raise Exception("Todos los modelos generativos fallaron o no están disponibles en esta API Key.")
             
-            prompt = f'''
-            Eres un experto en taxonomía de comercio electrónico e inteligencia artificial.
-            Aquí tienes una muestra de los productos y categorías de nuestro supermercado/tienda:
-            Categorías: {categories}
-            Muestra de productos: {products}
+        raw_text = response.text.strip()
+        if raw_text.startswith("```json"): raw_text = raw_text[7:]
+        if raw_text.startswith("```"): raw_text = raw_text[3:]
+        if raw_text.endswith("```"): raw_text = raw_text[:-3]
+        
+        anchors_data = json.loads(raw_text.strip())
+        global_sync_state["total_products"] = len(anchors_data)
+        global_sync_state["status"] = "Vectorizando anclas..."
+        
+        with sqlite_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
             
-            Tu tarea es generar un arreglo JSON con las mejores "Anclas" (Clústeres o categorías semánticas) para organizar este inventario en un motor de búsqueda vectorial.
-            El arreglo JSON debe contener entre 6 y 12 objetos con la siguiente estructura exacta:
-            [
-              {{
-                "id": "A1",
-                "titles": ["Mascotas", "Para tus peludos", "El rincón animal", "Mascotas felices"],
-                "subtitle": "Todo para tu mejor amigo",
-                "desc": "Alimentos y accesorios para mascotas",
-                "allowed_categories": ["Mascotas", "Veterinaria", "Animales"],
-                "exclude_rules": ["perro caliente", "salchicha"]
-              }}
-            ]
-            En "titles", DEBES dar un arreglo de 4 opciones de títulos atractivos y dinámicos para esta categoría.
-            En "allowed_categories", debes poner un arreglo de strings seleccionando EXACTAMENTE los nombres de las categorías proporcionadas en la lista 'Categorías' que pertenecen a esta ancla. ESTO ES UN FILTRO ESTRICTO. Solo los productos de estas categorías aparecerán en esta ancla. ¡Sé exhaustivo e incluye todas las categorías relevantes de la lista!
-            En "exclude_rules", incluye un arreglo de palabras clave que NO deben aparecer (por si hay ambigüedad).
-            Devuelve SOLO EL JSON válido, sin código de bloque extra ni markdown.
-            '''
-            models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
-            response = None
-            for m in models_to_try:
+            c.execute("SELECT anchor_id FROM anchor_metadata WHERE is_manual = 0")
+            old_ai_anchors = [row[0] for row in c.fetchall()]
+            
+            for oid in old_ai_anchors:
+                c.execute("DELETE FROM anchor_metadata WHERE anchor_id = ?", (oid,))
+                c.execute("DELETE FROM anchor_vectors WHERE anchor_id = ?", (oid,))
+                
+            conn.commit()
+            conn.close()
+            
+        for a in anchors_data:
+            primary_title = a.get('titles', [a.get('title', 'Explorar')])[0]
+            text = f"{primary_title} - {a.get('desc', '')}"
+            import time
+            res = None
+            for attempt in range(3):
                 try:
-                    model = genai.GenerativeModel(m)
-                    response = model.generate_content(prompt)
-                    if response:
-                        print(f"Modelo {m} seleccionado exitosamente para generación.")
-                        break
+                    res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+                    break
                 except Exception as e:
-                    print(f"Modelo {m} falló: {e}")
-                    
-            if not response:
-                raise Exception("Todos los modelos generativos fallaron o no están disponibles en esta API Key.")
-                
-            raw_text = response.text.strip()
-            if raw_text.startswith("```json"): raw_text = raw_text[7:]
-            if raw_text.startswith("```"): raw_text = raw_text[3:]
-            if raw_text.endswith("```"): raw_text = raw_text[:-3]
+                    time.sleep(2 ** attempt)
             
-            anchors_data = json.loads(raw_text.strip())
-            global_sync_state["total_products"] = len(anchors_data)
-            global_sync_state["status"] = "Vectorizando anclas..."
+            if res and 'embedding' in res:
+                vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
+                with sqlite_lock:
+                    conn = get_db_connection()
+                    c = conn.cursor()
+                    c.execute(
+                        "INSERT INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
+                        (a['id'], vector_blob)
+                    )
+                    c.execute(
+                        "INSERT INTO anchor_metadata (anchor_id, title, subtitle, allowed_categories, exclude_rules, is_manual, is_default, titles) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (a['id'], primary_title, a.get('subtitle', ''), json.dumps(a.get('allowed_categories', [])), json.dumps(a.get('exclude_rules', [])), 0, 0, json.dumps(a.get('titles', [])))
+                    )
+                    conn.commit()
+                    conn.close()
             
-            with sqlite_lock:
-                conn = get_db_connection()
-                c = conn.cursor()
-                
-                # Obtener los IDs de anclas generadas por IA (no manuales)
-                c.execute("SELECT anchor_id FROM anchor_metadata WHERE is_manual = 0")
-                old_ai_anchors = [row[0] for row in c.fetchall()]
-                
-                for oid in old_ai_anchors:
-                    c.execute("DELETE FROM anchor_metadata WHERE anchor_id = ?", (oid,))
-                    c.execute("DELETE FROM anchor_vectors WHERE anchor_id = ?", (oid,))
-                    
-                conn.commit()
-                conn.close()
-                
-            for a in anchors_data:
-                primary_title = a.get('titles', [a.get('title', 'Explorar')])[0]
-                text = f"{primary_title} - {a.get('desc', '')}"
-                import time
-                res = None
-                for attempt in range(3):
-                    try:
-                        res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
-                        break
-                    except Exception as e:
-                        time.sleep(2 ** attempt)
-                
-                if res and 'embedding' in res:
-                    vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
-                    with sqlite_lock:
-                        conn = get_db_connection()
-                        c = conn.cursor()
-                        c.execute(
-                            "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type, allowed_categories, exclude_rules, titles) VALUES (?, ?, ?, 'products', ?, ?, ?)",
-                            (a['id'], primary_title, a.get('subtitle', ''), json.dumps(a.get('allowed_categories', [])), json.dumps(a.get('exclude_rules', [])), json.dumps(a.get('titles', [])))
-                        )
-                        c.execute(
-                            "INSERT INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
-                            (a['id'], vector_blob)
-                        )
-                        conn.commit()
-                        conn.close()
-                global_sync_state["completed_products"] += 1
+            global_sync_state["completed_products"] += 1
+            
+        global_sync_state["is_syncing"] = False
+        global_sync_state["status"] = "Anclas generadas exitosamente."
+        print("[AI Anchors] Generación completada con éxito.")
+    except Exception as e:
+        print(f"[AI Anchors Error]: {e}")
+        global_sync_state["is_syncing"] = False
+        global_sync_state["status"] = "Error en la generación."
+
+
+@app.post("/api/admin/auto-generate-anchors")
+def auto_generate_anchors(background_tasks: BackgroundTasks):
+    background_tasks.add_task(run_auto_generate_anchors_sync)
                         
             print("[Fase 1] Auto-Generación de Anclas con IA completada exitosamente.")
             global_sync_state["status"] = "Generando clusters ambientales..."
@@ -3129,6 +3247,45 @@ def cleanup_activity_loop():
                     threading.Thread(target=run_auto_learn_synonyms_sync, daemon=True).start()
             except Exception as e:
                 print(f"[Auto-Learn Error]: {e}")
+                
+            try:
+                with sqlite_lock:
+                    conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
+                    c = conn.cursor()
+                    c.execute("SELECT value FROM metadata WHERE key = 'last_anchor_generation'")
+                    row = c.fetchone()
+                    last_anchor_gen = row[0] if row else None
+                    conn.close()
+                    
+                from datetime import datetime, timezone
+                now_dt = datetime.now(timezone.utc)
+                should_run_ai = False
+                if not last_anchor_gen:
+                    should_run_ai = True
+                else:
+                    last_dt = datetime.fromisoformat(last_anchor_gen)
+                    if (now_dt - last_dt).days >= 3:
+                        should_run_ai = True
+                        
+                if should_run_ai:
+                    print("[Auto-AI] Regenerando Anclas Semánticas y Macro Clústeres FTS...")
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.create_task(run_auto_generate_anchors_sync())
+                        asyncio.create_task(run_dynamic_macro_clusters_sync())
+                    else:
+                        threading.Thread(target=run_auto_generate_anchors_sync, daemon=True).start()
+                        threading.Thread(target=run_dynamic_macro_clusters_sync, daemon=True).start()
+                        
+                    with sqlite_lock:
+                        conn = sqlite3.connect(SQLITE_DB, timeout=30.0)
+                        c = conn.cursor()
+                        c.execute("INSERT OR REPLACE INTO metadata (key, value) VALUES (?, ?)", ('last_anchor_generation', now_dt.isoformat()))
+                        conn.commit()
+                        conn.close()
+            except Exception as e:
+                print(f"[Auto-AI Generación Error]: {e}")
                 
         except Exception as e:
             print(f"[Cleanup Error]: Requiere índice o error general. {e}")
