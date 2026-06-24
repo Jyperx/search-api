@@ -3126,6 +3126,7 @@ def cleanup_activity_loop():
     
     while True:
         try:
+            from datetime import datetime, timezone, timedelta
             # Eliminar actividad de más de 30 días
             thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
             
