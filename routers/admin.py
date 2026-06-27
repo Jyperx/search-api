@@ -584,6 +584,20 @@ def auto_learn_synonyms():
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
+@router.get("/api/admin/ranking-weights")
+def get_ranking_weights():
+    from services.context_engine import RANK_WEIGHTS
+    return {"status": "ok", "weights": RANK_WEIGHTS}
+
+@router.post("/api/admin/tune-weights")
+def tune_weights_now():
+    """Dispara el auto-ajuste de pesos del ranking en el momento (normalmente corre cada 12h)."""
+    from services.context_engine import tune_ranking_weights
+    try:
+        return tune_ranking_weights(core.firebase.db)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @router.get("/api/admin/clusters")
 def get_clusters():
     return {"status": "ok", "clusters": MACRO_CLUSTERS_CACHE}

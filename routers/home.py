@@ -38,6 +38,7 @@ class HomeFeedRequest(BaseModel):
     override_weather_temp: Optional[float] = None
     override_weather_code: Optional[int] = None
     sim_prompt: Optional[str] = None  # solo simulador admin: describe el gusto y se embebe como vector de usuario
+    preferred_categories: List[str] = []  # gustos del onboarding (cold-start)
 
 
 def build_cluster_fts_query(cluster_name: str, c_val: dict, include_cluster_name: bool = True) -> str:
@@ -157,8 +158,15 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         except Exception as e:
             logger.warning(f"[ItemStats] Error: {e}")
 
+        # Cold-start: si el usuario no tiene gusto aún, empujamos sus categorías del onboarding.
+        pref_set = set()
+        if user_vector is None and req.preferred_categories:
+            pref_set = {c.strip().lower() for c in req.preferred_categories if c}
+
         def add_proximity(row):
-            """Suma un boost por cercanía al final_score (si hay ubicación)."""
+            """Suma boost por cercanía (+ cold-start de gustos) al final_score."""
+            if pref_set and str(row.get("category", "")).lower() in pref_set:
+                row["final_score"] = row.get("final_score", 0) + 0.4  # empuje de gustos declarados
             if not store_loc or req.lat is None:
                 return
             loc = store_loc.get(row.get("storeId"))

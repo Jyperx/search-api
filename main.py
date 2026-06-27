@@ -29,6 +29,8 @@ async def lifespan(app: FastAPI):
     from data.concepts import load_concept_texts_from_firestore
     load_concept_texts_from_firestore(core.firebase.db)
     cargar_conceptos_en_memoria()
+    from services.context_engine import load_ranking_weights
+    load_ranking_weights(core.firebase.db)
 
     # 4.1 Construir conceptos ambientales si faltan (necesarios para el peso clima/hora)
     from data.concepts import DICCIONARIO_CONCEPTOS, _async_build_concept_dictionary
@@ -46,6 +48,13 @@ async def lifespan(app: FastAPI):
         from services.sync import retry_vector_queue_task
         from data.synonyms import learn_synonyms_from_clicks
         from data.clusters import learn_clusters_from_catalog
+        from services.context_engine import tune_ranking_weights
+
+        def _auto_tune_weights():
+            try:
+                tune_ranking_weights(core.firebase.db)
+            except Exception as e:
+                print(f"[Scheduler] Error ajustando pesos: {e}")
 
         def _auto_learn_synonyms():
             try:
@@ -70,9 +79,11 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(_auto_learn_synonyms, 'interval', hours=6, id='learn_synonyms', replace_existing=True)
         # Aprender/actualizar clusters por TF-IDF del catálogo cada 24 horas
         scheduler.add_job(_auto_learn_clusters, 'interval', hours=24, id='learn_clusters', replace_existing=True)
+        # Auto-ajustar pesos del ranking cada 12 horas
+        scheduler.add_job(_auto_tune_weights, 'interval', hours=12, id='tune_weights', replace_existing=True)
         scheduler.start()
         app.state.scheduler = scheduler
-        print("[Scheduler] Iniciado: vectores (10 min) + sinónimos (6 h) + clusters (24 h).")
+        print("[Scheduler] Iniciado: vectores (10 min) + sinónimos (6 h) + clusters (24 h) + pesos (12 h).")
     except Exception as e:
         print(f"[Scheduler] No se pudo iniciar: {e}")
 

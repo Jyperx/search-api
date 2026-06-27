@@ -17,6 +17,96 @@ from services.weather import WEATHER_CACHE_STORE
 
 logger = logging.getLogger(__name__)
 
+# Pesos GLOBALES del ranking. Se auto-ajustan con el comportamiento real (ver tune_ranking_weights).
+# affinity y exploration se mantienen estructurales; el resto aprende de los datos.
+RANK_WEIGHTS = {
+    "affinity": 0.55,
+    "popularity": 0.18,
+    "ctr": 0.25,
+    "exploration": 0.12,
+    "novelty": 0.08,
+    "sale": 0.10,
+}
+# Topes de seguridad para que el auto-ajuste nunca se vaya a un extremo.
+_WEIGHT_BOUNDS = {
+    "popularity": (0.08, 0.30),
+    "ctr": (0.15, 0.45),
+    "novelty": (0.03, 0.20),
+    "sale": (0.03, 0.35),
+}
+
+
+def _clamp_bounds(key, val):
+    lo, hi = _WEIGHT_BOUNDS.get(key, (0.0, 1.0))
+    return max(lo, min(hi, val))
+
+
+def load_ranking_weights(db):
+    """Carga los pesos guardados (config/ranking) si existen."""
+    if not db:
+        return
+    try:
+        doc = db.collection('config').document('ranking').get()
+        if doc.exists:
+            saved = (doc.to_dict() or {}).get('weights') or {}
+            for k, v in saved.items():
+                if k in RANK_WEIGHTS and isinstance(v, (int, float)):
+                    RANK_WEIGHTS[k] = float(v)
+            print(f"[Ranking] Pesos cargados desde Firestore: {RANK_WEIGHTS}")
+    except Exception as e:
+        print(f"[Ranking] No se pudieron cargar pesos: {e}")
+
+
+def tune_ranking_weights(db):
+    """Auto-ajuste de pesos GLOBALES desde el engagement real (CTR por producto).
+    Suavizado (mueve 25% hacia el objetivo) y con topes → estable, sin sobresaltos."""
+    from statistics import mean
+    from core.database import get_db_connection
+
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("""
+            SELECT i.impressions AS imp, i.clicks AS clk, s.onSale AS onsale, i.purchases AS pur
+            FROM item_stats i
+            JOIN search_index s ON s.id = i.product_id AND s.type = 'product'
+            WHERE i.impressions >= 5
+        """).fetchall()
+    finally:
+        conn.close()
+
+    if len(rows) < 20:
+        return {"status": "skipped", "reason": "datos insuficientes", "rows": len(rows)}
+
+    def ctr(r):
+        return r["clk"] / max(r["imp"], 1)
+
+    all_ctr = mean(ctr(r) for r in rows) or 0.0
+    sale_rows = [r for r in rows if str(r["onsale"]) in ("1", "True", "true")]
+    nosale_rows = [r for r in rows if r not in sale_rows]
+    sale_ctr = mean(ctr(r) for r in sale_rows) if sale_rows else all_ctr
+    nosale_ctr = mean(ctr(r) for r in nosale_rows) if nosale_rows else all_ctr
+
+    def smooth(cur, target):
+        return round(cur + 0.25 * (target - cur), 4)
+
+    # 1) Oferta: si los productos en oferta convierten mejor, sube el peso de "sale".
+    sale_lift = (sale_ctr + 1e-6) / (nosale_ctr + 1e-6)
+    RANK_WEIGHTS["sale"] = smooth(RANK_WEIGHTS["sale"], _clamp_bounds("sale", 0.10 * sale_lift))
+
+    # 2) CTR vs popularidad: a más datos, confiamos más en el CTR aprendido y menos en likes (adivinado).
+    total_clicks = sum(r["clk"] for r in rows)
+    RANK_WEIGHTS["ctr"] = smooth(RANK_WEIGHTS["ctr"], _clamp_bounds("ctr", 0.15 + min(total_clicks, 1000) / 1000 * 0.25))
+    RANK_WEIGHTS["popularity"] = smooth(RANK_WEIGHTS["popularity"], _clamp_bounds("popularity", 0.28 - min(total_clicks, 1000) / 1000 * 0.15))
+
+    if db:
+        try:
+            db.collection('config').document('ranking').set({"weights": RANK_WEIGHTS}, merge=True)
+        except Exception as e:
+            logger.error(f"[Ranking] Error persistiendo pesos: {e}")
+
+    print(f"[Ranking] Pesos auto-ajustados: {RANK_WEIGHTS}")
+    return {"status": "ok", "weights": dict(RANK_WEIGHTS), "sale_lift": round(sale_lift, 2), "total_clicks": total_clicks}
+
 
 def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, x))
@@ -183,8 +273,9 @@ def score_product(row: dict, distance: float, stats: dict | None = None) -> floa
 
     noise = (abs(hash(str(row.get("id", "")))) % 50) / 1000.0
 
-    return (affinity * 0.55) + (popularity * 0.18) + cr_boost \
-        + (learned * 0.25) + (explore * 0.12) + (novelty * 0.08) + (sale_boost * 0.1) + noise
+    W = RANK_WEIGHTS
+    return (affinity * W["affinity"]) + (popularity * W["popularity"]) + cr_boost \
+        + (learned * W["ctr"]) + (explore * W["exploration"]) + (novelty * W["novelty"]) + (sale_boost * W["sale"]) + noise
 
 
 def concept_distance(product_emb_bytes: bytes, concept_id: str) -> float:
