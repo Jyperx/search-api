@@ -30,6 +30,13 @@ ENV_TITLES = {
     "ENV_NOCHE": ["Plan nocturno", "Para esta noche", "Antojo de noche"],
 }
 
+# Subtítulos creativos para variar (en vez de repetir siempre "Basado en tus intereses")
+SECTION_SUBTITLES = [
+    "Elegidos para ti", "Porque te puede gustar", "Hecho a tu medida",
+    "Lo que va contigo", "Seleccionados para ti", "Pensado en tus gustos",
+    "Esto te va a encantar", "Va con tu estilo", "No te lo pierdas",
+]
+
 class HomeFeedRequest(BaseModel):
     activities: List[dict] = []
     lat: Optional[float] = None
@@ -184,6 +191,26 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 row["distance_km"] = round(dist, 1)
                 row["_prox"] = proximity_boost(dist)
                 row["final_score"] = row.get("final_score", 0) + row["_prox"]
+
+        def take_interleaved_by_store(candidates, n):
+            """Llena alternando entre negocios (variedad). Si solo hay uno, llena con ese."""
+            from collections import OrderedDict
+            buckets = OrderedDict()
+            for row in candidates:
+                if row["id"] in global_seen_ids:
+                    continue
+                buckets.setdefault(row.get("storeId", ""), []).append(row)
+            out = []
+            while len(out) < n and any(buckets.values()):
+                for sid in list(buckets.keys()):
+                    if buckets[sid]:
+                        row = buckets[sid].pop(0)
+                        row.pop("embedding", None)
+                        out.append(row)
+                        global_seen_ids.add(row["id"])
+                        if len(out) >= n:
+                            break
+            return out
 
         def take_from_pool(candidates, n, store_cap=2, cat_cap=None):
             out = []
@@ -358,7 +385,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         for cat in ordered_cats:
             if len(feed_sections) >= 12:
                 break
-            items = take_from_pool(cat_groups[cat], 5)
+            # Carrusel por categoría: alterna entre negocios (variedad); si solo hay uno, llena con ese
+            items = take_interleaved_by_store(cat_groups[cat], 10)
             if len(items) >= 2:
                 titles = anchor_title_map.get(cat.lower())
                 title = random.choice(titles) if titles else cat
@@ -366,9 +394,9 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                     "id": f"dyn_cat_{str(cat).replace(' ', '_')}",
                     "type": "products",
                     "title": title,
-                    "subtitle": "Basado en tus intereses",
+                    "subtitle": random.choice(SECTION_SUBTITLES),
                     "items": items,
-                    "layout": "grid" if len(items) >= 4 else "scroll",
+                    "layout": "scroll",
                 })
 
         # 4e. Anti-Bubble: categoría no visitada por el usuario
