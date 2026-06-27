@@ -1,74 +1,89 @@
-import os
-import time
+import numpy as np
 import google.generativeai as genai
-import sqlite_vec
+import logging
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from core.config import EMBEDDING_MODEL, global_sync_state
-from database import get_db_connection_raw
+import sqlite_vec
+from core.config import EMBEDDING_MODEL, LLM_MODEL
+from data.concepts import CATEGORY_WEIGHTS, DICCIONARIO_CONCEPTOS
 
-# Configurar API de Gemini
-genai.configure(api_key=os.getenv("VITE_GEMINI_API_KEY", os.getenv("GOOGLE_API_KEY", "")))
+logger = logging.getLogger(__name__)
+_embed_executor = ThreadPoolExecutor(max_workers=3)
 
-vector_worker_pool = ThreadPoolExecutor(max_workers=3)
+def _serialize(vector: np.ndarray) -> bytes:
+    return sqlite_vec.serialize_float32(vector.tolist())
 
-def generate_product_embedding(name, category, description):
-    text = f"Producto: {name}. Categoría: {category}. Descripción: {description}."
-    for attempt in range(3):
-        try:
-            res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
-            return sqlite_vec.serialize_float32(res['embedding'][:768])
-        except Exception as e:
-            print(f"Error generando embedding para {name} (Intento {attempt}): {e}")
-            time.sleep(2 ** attempt)
-    return None
+def _find_closest_concept(vector: np.ndarray) -> tuple[float, str]:
+    """Retorna (similitud_maxima, id_del_concepto_mas_cercano)"""
+    best_sim = -1.0
+    best_id = ""
+    for concept_id, concept_vec in DICCIONARIO_CONCEPTOS.items():
+        sim = float(np.dot(vector, concept_vec) / (np.linalg.norm(vector) * np.linalg.norm(concept_vec) + 1e-10))
+        if sim > best_sim:
+            best_sim = sim
+            best_id = concept_id
+    return best_sim, best_id
 
-def async_index_product_vector(p_id, name, category, description):
-    global global_sync_state
+async def _call_gemini_embedding(text: str) -> np.ndarray | None:
+    loop = asyncio.get_event_loop()
     try:
-        vector_bytes = generate_product_embedding(name, category, description)
-        if vector_bytes:
-            try:
-                conn = get_db_connection_raw()
-                c = conn.cursor()
-                c.execute("DELETE FROM product_vectors WHERE product_id = ?", (p_id,))
-                c.execute("INSERT INTO product_vectors (product_id, embedding) VALUES (?, ?)", (p_id, vector_bytes))
-                conn.commit()
-                conn.close()
-            except Exception as e:
-                print(f"Error guardando vector: {e}")
-    finally:
-        global_sync_state["completed_products"] += 1
-        if global_sync_state["completed_products"] >= global_sync_state["total_products"] and global_sync_state["total_products"] > 0:
-            global_sync_state["is_syncing"] = False
-            global_sync_state["status"] = "Completado"
+        def _blocking_call():
+            res = genai.embed_content(model=EMBEDDING_MODEL, content=text)
+            embedding = np.array(res['embedding'], dtype=np.float32)
+            norm = np.linalg.norm(embedding)
+            return embedding / norm if norm > 0 else embedding
+            
+        return await loop.run_in_executor(_embed_executor, _blocking_call)
+    except Exception as e:
+        logger.warning(f"Error in Gemini embedding API: {e}")
+        return None
 
-def async_index_store_vector(s_id, name, category, description, products_summary):
-    global global_sync_state
+async def generate_product_embedding(name: str, category: str, description: str) -> tuple[bytes | None, str]:
+    cat_key = category.lower().strip()
+    anchor_weight = CATEGORY_WEIGHTS.get(cat_key, CATEGORY_WEIGHTS["default"])
+
+    raw_text = f"Producto: {name}. Categoría: {category}. Descripción: {description}"
+    vector_base = await _call_gemini_embedding(raw_text)
+    if vector_base is None:
+        return None, 'error'
+
+    if anchor_weight == 0.0:
+        return _serialize(vector_base), 'raw_only'
+
+    if DICCIONARIO_CONCEPTOS:
+        best_sim, best_anchor_id = _find_closest_concept(vector_base)
+        if best_sim >= 0.62:
+            anchor_vec = DICCIONARIO_CONCEPTOS[best_anchor_id]
+            vector_final = (vector_base * (1 - anchor_weight)) + (anchor_vec * anchor_weight)
+            vector_final = vector_final / np.linalg.norm(vector_final)
+            return _serialize(vector_final), 'concept_anchoring'
+
+    intent_str = ""
     try:
-        text = f"Comercio: {name}. Categoría: {category}. Descripción: {description}. Productos principales que vende: {products_summary}."
-        vector_bytes = None
-        for attempt in range(3):
-            try:
-                res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
-                vector_bytes = sqlite_vec.serialize_float32(res['embedding'][:768])
-                break
-            except Exception as e:
-                print(f"Error generando embedding para store {name} (Intento {attempt}): {e}")
-                time.sleep(2 ** attempt)
-                
-        if vector_bytes:
-            try:
-                conn = get_db_connection_raw()
-                c = conn.cursor()
-                c.execute("DELETE FROM store_vectors WHERE store_id = ?", (s_id,))
-                c.execute("INSERT INTO store_vectors (store_id, embedding) VALUES (?, ?)", (s_id, vector_bytes))
-                conn.commit()
-                conn.close()
-            except Exception as e:
-                print(f"Error guardando vector de tienda: {e}")
-    finally:
-        # Los comercios también suman al progreso
-        global_sync_state["completed_products"] += 1
-        if global_sync_state["completed_products"] >= global_sync_state["total_products"] and global_sync_state["total_products"] > 0:
-            global_sync_state["is_syncing"] = False
-            global_sync_state["status"] = "Completado"
+        prompt = (
+            f"Producto: '{name}', categoría: '{category}', descripción: '{description}'. "
+            f"Responde SOLO con 4 palabras clave separadas por comas que describan "
+            f"el momento ideal para consumirlo (clima, hora, estado de ánimo)."
+        )
+        
+        def _blocking_llm_call():
+            llm = genai.GenerativeModel(LLM_MODEL)
+            return llm.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(temperature=0.2, max_output_tokens=25)
+            )
+            
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(_embed_executor, _blocking_llm_call)
+        
+        if res and res.text:
+            intent_str = f" Contexto: {res.text.strip()}"
+    except Exception as e:
+        logger.warning(f"Flash Lite fallback failed for '{name}': {e}")
+
+    enriched_text = raw_text + intent_str
+    vector_enriched = await _call_gemini_embedding(enriched_text)
+    if vector_enriched is not None:
+        return _serialize(vector_enriched), 'flash_lite_enrichment'
+
+    return _serialize(vector_base), 'raw_only'

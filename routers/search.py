@@ -7,15 +7,24 @@ import struct
 import google.generativeai as genai
 import sqlite_vec
 
-from database import get_db_connection, db
-from schemas import SimulateRequest
-from core.config import MACRO_CLUSTERS_CACHE, REVERSE_SYNONYMS, SYNONYMS, EMBEDDING_MODEL
-from services.recommender import calculate_user_vector, build_cluster_fts_query
+from core.database import get_db_dep, sqlite_lock
+from core.firebase import db
+from core.config import EMBEDDING_MODEL
+from data.clusters import MACRO_CLUSTERS_CACHE
+from data.synonyms import REVERSE_SYNONYMS, SYNONYMS
+from services.recommender import calculate_user_vector
+from routers.home import build_cluster_fts_query
+from pydantic import BaseModel
+
+class SimulateRequest(BaseModel):
+    prompt: str
+
+from routers.home import build_cluster_fts_query
 
 router = APIRouter()
 
 @router.get("/api/search")
-def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Connection = Depends(get_db_connection)):
+def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Connection = Depends(get_db_dep)):
     """Busca en el índice FTS5 y Vectorial con Soporte para Categorías y Perfil de Usuario."""
     c = conn.cursor()
 
@@ -70,8 +79,10 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                    p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
                    s.name as storeName
             FROM search_index p
-            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-            WHERE search_index MATCH ?
+            LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+            WHERE search_index MATCH ? 
+            AND CAST(p.available AS INTEGER) = 1 
+            AND CAST(s.isOpen AS INTEGER) = 1
             ORDER BY 
                 rank - (
                     (COALESCE(CAST(p.likes AS REAL), 0) * 0.1) + 
@@ -94,8 +105,10 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                        p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
                        s.name as storeName
                 FROM search_index p
-                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-                WHERE p.name LIKE ? OR p.category LIKE ? OR p.description LIKE ?
+                LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+                WHERE (p.name LIKE ? OR p.category LIKE ? OR p.description LIKE ?)
+                AND CAST(p.available AS INTEGER) = 1 
+                AND CAST(s.isOpen AS INTEGER) = 1
                 ORDER BY 
                     (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
                     (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
@@ -138,7 +151,7 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                                     return 1.0
                                 except: return 1.0
                             
-                            user_vector_bytes = calculate_user_vector(conn, activities, calc_decay, current_hour=datetime.now().hour)
+                            user_vector_bytes = calculate_user_vector(activities, current_hour=datetime.now().hour)
                             if user_vector_bytes:
                                 u_v_floats = struct.unpack(f"{len(raw_query_vector)}f", user_vector_bytes)
                                 query_vector = sqlite_vec.serialize_float32(
@@ -228,7 +241,7 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
     return {"results": results, "exact_match": exact_match}
 
 @router.get("/api/popular")
-def get_popular_products(conn: sqlite3.Connection = Depends(get_db_connection)):
+def get_popular_products(conn: sqlite3.Connection = Depends(get_db_dep)):
     """Devuelve productos recomendados o populares."""
     c = conn.cursor()
     c.execute("""
@@ -245,7 +258,7 @@ def get_popular_products(conn: sqlite3.Connection = Depends(get_db_connection)):
     return {"results": [dict(row) for row in rows]}
 
 @router.get("/api/promotions")
-def get_promotions(conn: sqlite3.Connection = Depends(get_db_connection)):
+def get_promotions(conn: sqlite3.Connection = Depends(get_db_dep)):
     """Devuelve las promociones indexadas."""
     c = conn.cursor()
     c.execute("SELECT * FROM promotions")
@@ -253,7 +266,7 @@ def get_promotions(conn: sqlite3.Connection = Depends(get_db_connection)):
     return {"results": [dict(row) for row in rows]}
 
 @router.post("/api/simulate")
-def simulate_home_feed(req: SimulateRequest, conn: sqlite3.Connection = Depends(get_db_connection)):
+def simulate_home_feed(req: SimulateRequest, conn: sqlite3.Connection = Depends(get_db_dep)):
     """Simulador para probar el Cerebro Vectorial en el panel de Admin"""
     try:
         res = genai.embed_content(
@@ -353,7 +366,7 @@ def simulate_home_feed(req: SimulateRequest, conn: sqlite3.Connection = Depends(
         return []
 
 @router.get("/api/recommendations/{uid}")
-def get_user_recommendations(uid: str, conn: sqlite3.Connection = Depends(get_db_connection)):
+def get_user_recommendations(uid: str, conn: sqlite3.Connection = Depends(get_db_dep)):
     """Obtiene recomendaciones on-demand con vectores, sección nuevos y comercios populares."""
     try:
         from datetime import datetime, timezone
@@ -382,7 +395,7 @@ def get_user_recommendations(uid: str, conn: sqlite3.Connection = Depends(get_db
                 user_data = user_doc.to_dict() or {}
                 activities = user_data.get('recent_activity', [])
             
-        user_vector = calculate_user_vector(conn, activities, calc_decay, current_hour=current_hour) if activities else None
+        user_vector = calculate_user_vector(activities, current_hour=current_hour) if activities else None
 
         c = conn.cursor()
         recommended = []

@@ -1,0 +1,189 @@
+import logging
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from core.database import get_db_connection, sqlite_lock
+from core.config import global_sync_state
+from core.firebase import db
+from services.embeddings import generate_product_embedding
+
+logger = logging.getLogger(__name__)
+
+vector_worker_pool = ThreadPoolExecutor(max_workers=3)
+
+def async_index_product_vector(product_id: str, name: str, category: str, description: str):
+    """Worker sincrónico corriendo en pool"""
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        vector_bytes, source_hint = loop.run_until_complete(
+            generate_product_embedding(name, category, description)
+        )
+        loop.close()
+
+        with sqlite_lock:
+            conn = get_db_connection()
+            if vector_bytes:
+                conn.execute(
+                    "INSERT OR REPLACE INTO product_vectors (product_id, embedding) VALUES (?, ?)",
+                    (product_id, vector_bytes)
+                )
+                # Borrar de la cola si tuvo éxito
+                conn.execute("DELETE FROM vector_queue WHERE product_id = ?", (product_id,))
+            else:
+                # FIX B3: Cola de reintentos
+                conn.execute(
+                    "INSERT OR REPLACE INTO vector_queue (product_id, name, category, description, attempts, last_attempt, source_hint) "
+                    "VALUES (?, ?, ?, ?, ?, datetime('now'), ?)",
+                    (product_id, name, category, description, 1, source_hint)
+                )
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error in async vector indexing for {product_id}: {e}")
+
+def do_sync_database():
+    """Sincronización masiva de Firestore a SQLite (FTS5 + Vectores)"""
+    global vector_worker_pool
+    
+    if global_sync_state["is_syncing"] or not db:
+        return
+        
+    global_sync_state["is_syncing"] = True
+    global_sync_state["status"] = "processing"
+    
+    # FIX B2: Cancelar workers anteriores
+    vector_worker_pool.shutdown(wait=False, cancel_futures=True)
+    vector_worker_pool = ThreadPoolExecutor(max_workers=3)
+    
+    # FIX B2: Swap atómico con tabla temporal
+    with sqlite_lock:
+        conn = get_db_connection()
+        conn.execute("DROP TABLE IF EXISTS search_index_new")
+        conn.execute("""
+            CREATE VIRTUAL TABLE search_index_new USING fts5(
+                id, type, storeId, name, category, description, price,
+                icon, imageUrl UNINDEXED, onSale UNINDEXED, salePrice UNINDEXED,
+                likes UNINDEXED, views UNINDEXED, purchases UNINDEXED,
+                available UNINDEXED, isOpen UNINDEXED
+            )
+        """)
+        conn.commit()
+        conn.close()
+        
+    try:
+        stores = db.collection('stores').stream()
+        for store in stores:
+            s_data = store.to_dict()
+            s_id = store.id
+            s_name = s_data.get('name', '')
+            s_cat = s_data.get('category', '')
+            is_open = int(bool(s_data.get('isOpen', True))) # FIX B1
+            
+            products = list(db.collection('stores').document(s_id).collection('products').stream())
+            
+            with sqlite_lock:
+                conn = get_db_connection()
+                # Insert store
+                conn.execute("""
+                    INSERT INTO search_index_new
+                        (id, type, storeId, name, category, description,
+                         price, icon, imageUrl, onSale, salePrice,
+                         likes, views, purchases, available, isOpen)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    s_id, 'store', s_id, s_name, s_cat, '',
+                    '0', '', '', 0, '', 0, 0, 0, 1, is_open
+                ))
+                
+                # Insert products
+                for p in products:
+                    p_data = p.to_dict()
+                    p_id = p.id
+                    p_name = p_data.get('name', '')
+                    p_cat = p_data.get('category', s_cat)
+                    p_desc = p_data.get('description', '')
+                    p_avail = int(bool(p_data.get('available', True))) # FIX B1
+                    
+                    conn.execute("""
+                        INSERT INTO search_index_new
+                            (id, type, storeId, name, category, description,
+                             price, icon, imageUrl, onSale, salePrice,
+                             likes, views, purchases, available, isOpen)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        p_id, 'product', s_id, p_name, p_cat, p_desc,
+                        str(p_data.get('price', '')), '', '',
+                        1 if p_data.get('onSale') else 0,
+                        str(p_data.get('salePrice', '')),
+                        p_data.get('likes', 0),
+                        p_data.get('views', 0),
+                        p_data.get('purchases', 0),
+                        p_avail, is_open
+                    ))
+                conn.commit()
+                conn.close()
+                
+            # Background embedding
+            for p in products:
+                p_data = p.to_dict()
+                if int(bool(p_data.get('available', True))):
+                    vector_worker_pool.submit(
+                        async_index_product_vector, 
+                        p.id, 
+                        p_data.get('name', ''), 
+                        p_data.get('category', s_cat), 
+                        p_data.get('description', '')
+                    )
+                
+        # FIX B2: Aplicar Swap atómico
+        with sqlite_lock:
+            conn = get_db_connection()
+            conn.execute("DROP TABLE IF EXISTS search_index_old")
+            # Si no existe, RENAME fallará, manejar con TRY/CATCH
+            try:
+                conn.execute("ALTER TABLE search_index RENAME TO search_index_old")
+            except: pass
+            
+            conn.execute("ALTER TABLE search_index_new RENAME TO search_index")
+            conn.execute("DROP TABLE IF EXISTS search_index_old")
+            conn.commit()
+            conn.close()
+            
+    except Exception as e:
+        logger.error(f"Sync failed: {e}")
+    finally:
+        global_sync_state["is_syncing"] = False
+        global_sync_state["status"] = "idle"
+
+def retry_vector_queue_task():
+    """Función para el scheduler de APScheduler para reintentos"""
+    rows_to_retry = []
+    with sqlite_lock:
+        conn = get_db_connection()
+        rows = conn.execute(
+            "SELECT * FROM vector_queue WHERE attempts < 5 ORDER BY attempts ASC LIMIT 20"
+        ).fetchall()
+        
+        for row in rows:
+            conn.execute(
+                "UPDATE vector_queue SET attempts = attempts + 1, last_attempt = datetime('now') WHERE product_id = ?",
+                (row['product_id'],)
+            )
+            rows_to_retry.append(dict(row))
+        conn.commit()
+        conn.close()
+        
+    for row in rows_to_retry:
+        vector_worker_pool.submit(
+            async_index_product_vector, 
+            row['product_id'], 
+            row['name'], 
+            row['category'], 
+            row['description']
+        )
+
+def do_sync_store(store_id: str):
+    pass # To be implemented if needed
+
+def do_seed_anchors():
+    pass # To be implemented if needed
