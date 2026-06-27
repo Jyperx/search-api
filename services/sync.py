@@ -70,12 +70,16 @@ def async_index_product_vector(product_id: str, name: str, category: str, descri
 def do_sync_database():
     """Sincronización masiva de Firestore a SQLite (FTS5 + Vectores)"""
     global vector_worker_pool
-    
-    if global_sync_state["is_syncing"] or not db:
+
+    # OJO: el endpoint /api/sync ya pone is_syncing=True para feedback inmediato.
+    # Aquí solo abortamos si no hay Firebase (antes había un deadlock con is_syncing).
+    if not db:
+        global_sync_state["is_syncing"] = False
+        global_sync_state["status"] = "error: sin Firebase"
         return
-        
+
     global_sync_state["is_syncing"] = True
-    global_sync_state["status"] = "processing"
+    global_sync_state["status"] = "Indexando comercios y productos..."
     
     # FIX B2: Cancelar workers anteriores
     vector_worker_pool.shutdown(wait=False, cancel_futures=True)

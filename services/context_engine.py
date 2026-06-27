@@ -76,11 +76,12 @@ def compute_context_weights(temp, code, hour: int) -> dict:
     return {k: v for k, v in weights.items() if v > 0.05}
 
 
-def build_context_vector(user_vec_np, weights: dict, Wu: float = 1.0):
+def build_context_vector(user_vec_np, weights: dict, Wu: float = 2.5):
     """
     Mezcla Wu·usuario + Σ(peso·concepto) y normaliza.
     - user_vec_np: np.ndarray(768) o None
     - weights: {concept_id: peso}
+    Wu alto (2.5) hace que el GUSTO del usuario domine; el clima/hora solo empuja suave.
     Retorna bytes serializados para sqlite-vec, o None si no hay señal.
     """
     ctx = np.zeros(768, dtype=np.float32)

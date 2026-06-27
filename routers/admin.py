@@ -744,6 +744,99 @@ def index_store_status(store_id: str, isOpen: bool = True):
 def get_sync_status():
     return global_sync_state
 
+DEMO_STORES = [
+    ("Restaurante", "Sazón de la Abuela", ["Bandeja Paisa", "Sancocho de Gallina", "Churrasco", "Mojarra Frita", "Ajiaco Santafereño", "Pechuga Gratinada", "Sopa de Costilla", "Arroz con Pollo", "Cazuela de Mariscos", "Lomo al Trapo"]),
+    ("Comidas rápidas", "El Rey del Perro", ["Hamburguesa Doble", "Perro Caliente Especial", "Salchipapa", "Picada Personal", "Choriperro", "Alitas BBQ", "Burger con Tocineta", "Papas a la Francesa", "Hot Dog Americano", "Sandwich Cubano"]),
+    ("Panadería", "Pan Caliente", ["Pan de Bono", "Almojábana", "Pandebono", "Buñuelo", "Croissant", "Roscón con Arequipe", "Mantecada", "Torta de Naranja", "Empanada de Pollo", "Pan Aliñado"]),
+    ("Mercados", "Mercamás Express", ["Arroz 1kg", "Aceite Premier", "Huevos AA x30", "Leche Entera", "Panela", "Frijol Cargamanto", "Café Molido", "Atún en Lata", "Azúcar 1kg", "Papel Higiénico x4"]),
+    ("Spa & Belleza", "Bella Spa", ["Masaje Relajante", "Limpieza Facial", "Manicure Semipermanente", "Pedicure Spa", "Depilación", "Tratamiento Capilar", "Maquillaje Social", "Exfoliación Corporal", "Pestañas Pelo a Pelo", "Diseño de Cejas"]),
+    ("Farmacia", "Farmacia La Salud", ["Acetaminofén", "Ibuprofeno 400", "Suero Oral", "Vitamina C", "Alcohol Antiséptico", "Curas x10", "Gel Antibacterial", "Loratadina", "Omeprazol", "Jarabe para la Tos"]),
+    ("Licores", "Licorera La 70", ["Aguardiente Antioqueño", "Ron Medellín", "Cerveza Águila x6", "Whisky 12 Años", "Vino Tinto", "Tequila Reposado", "Vodka", "Cerveza Corona x6", "Ginebra", "Hielo x2kg"]),
+    ("Ropa & Moda", "Moda Urbana", ["Camiseta Básica", "Jean Slim", "Vestido Casual", "Tenis Urbanos", "Buzo con Capucha", "Gorra", "Chaqueta Jean", "Blusa Manga Larga", "Short Deportivo", "Medias x3"]),
+    ("Tecnología", "TecnoPunto", ["Audífonos Bluetooth", "Cargador Tipo C", "Power Bank 10000mAh", "Mouse Inalámbrico", "Cable HDMI", "Memoria USB 64GB", "Soporte Celular", "Teclado Bluetooth", "Protector de Pantalla", "Parlante Portátil"]),
+    ("Barbería", "Barbería El Corte", ["Corte Clásico", "Corte + Barba", "Perfilado de Barba", "Corte Niño", "Mascarilla Negra", "Tinte Capilar", "Línea de Diseño", "Cejas Hombre", "Ritual Hot Towel", "Corte Premium"]),
+]
+
+
+def _do_seed_demo():
+    """Crea 10 comercios x 10 productos en Firestore + los indexa y vectoriza."""
+    import random
+    from firebase_admin import firestore as _fs
+    fdb = core.firebase.db
+    try:
+        rows = []  # (tuple para search_index)
+        embed_jobs = []  # (callable args)
+        for i, (cat, sname, products) in enumerate(DEMO_STORES):
+            sid = f"demo_store_{i+1}"
+            sdesc = f"El mejor lugar de {cat.lower()} en tu zona."
+            s_likes = random.randint(5, 200)
+            fdb.collection('stores').document(sid).set({
+                "name": sname, "category": cat, "description": sdesc,
+                "isOpen": True, "likes": s_likes, "views": random.randint(50, 1000),
+                "isDemo": True, "createdAt": _fs.SERVER_TIMESTAMP,
+            })
+            rows.append((sid, 'store', sid, sname, cat, sdesc, '0', '', '', 0, '', s_likes, 0, 0, 1, 1))
+            embed_jobs.append(('store', sid, sname, cat, sdesc))
+
+            for j, pname in enumerate(products):
+                pid = f"demo_prod_{i+1}_{j+1}"
+                price = random.choice([5000, 8000, 12000, 15000, 20000, 25000, 30000])
+                on_sale = random.random() < 0.3
+                sale_price = int(price * 0.8) if on_sale else None
+                pdesc = f"{pname} de {sname}."
+                p_likes = random.randint(0, 80)
+                p_views = random.randint(10, 400)
+                p_purch = random.randint(0, 40)
+                fdb.collection('stores').document(sid).collection('products').document(pid).set({
+                    "name": pname, "storeId": sid, "category": cat, "description": pdesc,
+                    "price": price, "available": True, "onSale": on_sale, "salePrice": sale_price,
+                    "likes": p_likes, "views": p_views, "purchases": p_purch,
+                    "isDemo": True, "createdAt": _fs.SERVER_TIMESTAMP,
+                })
+                rows.append((pid, 'product', sid, pname, cat, pdesc, str(price), 'fastfood', '',
+                             1 if on_sale else 0, str(sale_price or ''), p_likes, p_views, p_purch, 1, 1))
+                embed_jobs.append(('product', pid, pname, cat, pdesc))
+
+        # Indexar todo en SQLite de una vez
+        with sqlite_lock:
+            conn = get_db_connection()
+            for r in rows:
+                conn.execute("DELETE FROM search_index WHERE id = ? AND type = ?", (r[0], r[1]))
+                conn.execute(
+                    "INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
+            conn.commit()
+            conn.close()
+
+        # Vectorizar en background
+        for job in embed_jobs:
+            if job[0] == 'store':
+                vector_worker_pool.submit(index_store_vector, job[1], job[2], job[3], job[4])
+            else:
+                vector_worker_pool.submit(async_index_product_vector, job[1], job[2], job[3], job[4])
+
+        global_sync_state["status"] = f"Demo creada: {len(DEMO_STORES)} comercios, {len(rows) - len(DEMO_STORES)} productos"
+        print(f"[Seed Demo] Listo: {len(rows)} filas indexadas, vectorizando en background.")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        global_sync_state["status"] = f"error demo: {e}"
+    finally:
+        global_sync_state["is_syncing"] = False
+
+
+@router.post("/api/admin/seed-demo")
+def seed_demo(background_tasks: BackgroundTasks):
+    if not core.firebase.db:
+        return {"status": "error", "message": "Firebase no inicializado"}
+    if global_sync_state.get("is_syncing", False):
+        return {"status": "already_running"}
+    global_sync_state["is_syncing"] = True
+    global_sync_state["status"] = "Creando datos de prueba..."
+    background_tasks.add_task(_do_seed_demo)
+    return {"status": "processing"}
+
+
 @router.post("/api/sync")
 def sync_database(background_tasks: BackgroundTasks):
     if global_sync_state.get("is_syncing", False):
