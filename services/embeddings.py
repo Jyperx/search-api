@@ -1,10 +1,10 @@
 import numpy as np
-import google.generativeai as genai
 import logging
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import sqlite_vec
-from core.config import EMBEDDING_MODEL, LLM_MODEL
+from core.config import LLM_MODEL
+from core.genai_client import embed_text, generate_text
 from data.concepts import CATEGORY_WEIGHTS, DICCIONARIO_CONCEPTOS
 
 logger = logging.getLogger(__name__)
@@ -28,14 +28,13 @@ async def _call_gemini_embedding(text: str) -> np.ndarray | None:
     loop = asyncio.get_event_loop()
     try:
         def _blocking_call():
-            res = genai.embed_content(model=EMBEDDING_MODEL, content=text)
-            embedding = np.array(res['embedding'][:768], dtype=np.float32)  # truncar (Matryoshka) a la dim de las tablas vec0
+            embedding = np.array(embed_text(text), dtype=np.float32)  # ya truncado a 768 (Matryoshka)
             norm = np.linalg.norm(embedding)
             return embedding / norm if norm > 0 else embedding
-            
+
         return await loop.run_in_executor(_embed_executor, _blocking_call)
     except Exception as e:
-        logger.warning(f"Error in Gemini embedding API: {e}")
+        logger.warning(f"Error en la API de embeddings de Gemini: {e}")
         return None
 
 async def generate_product_embedding(name: str, category: str, description: str) -> tuple[bytes | None, str]:
@@ -67,19 +66,15 @@ async def generate_product_embedding(name: str, category: str, description: str)
         )
         
         def _blocking_llm_call():
-            llm = genai.GenerativeModel(LLM_MODEL)
-            return llm.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(temperature=0.2, max_output_tokens=25)
-            )
-            
+            return generate_text(prompt, model=LLM_MODEL, temperature=0.2, max_output_tokens=25)
+
         loop = asyncio.get_event_loop()
         res = await loop.run_in_executor(_embed_executor, _blocking_llm_call)
-        
-        if res and res.text:
-            intent_str = f" Contexto: {res.text.strip()}"
+
+        if res and res.strip():
+            intent_str = f" Contexto: {res.strip()}"
     except Exception as e:
-        logger.warning(f"Flash Lite fallback failed for '{name}': {e}")
+        logger.warning(f"Falló el enriquecimiento Flash Lite para '{name}': {e}")
 
     enriched_text = raw_text + intent_str
     vector_enriched = await _call_gemini_embedding(enriched_text)

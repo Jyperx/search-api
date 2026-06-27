@@ -105,10 +105,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         if req.sim_prompt and user_vec_np is None:
             try:
                 import sqlite_vec
-                import google.generativeai as genai
-                from core.config import EMBEDDING_MODEL
-                res = genai.embed_content(model=EMBEDDING_MODEL, content=req.sim_prompt, task_type="retrieval_query")
-                v = np.array(res['embedding'][:768], dtype=np.float32)
+                from core.genai_client import embed_text
+                v = np.array(embed_text(req.sim_prompt, task_type="retrieval_query"), dtype=np.float32)
                 n = np.linalg.norm(v)
                 if n > 0:
                     user_vec_np = v / n

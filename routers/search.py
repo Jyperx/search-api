@@ -4,12 +4,11 @@ import json
 import math
 import random
 import struct
-import google.generativeai as genai
 import sqlite_vec
 
 from core.database import get_db_dep, sqlite_lock
 import core.firebase
-from core.config import EMBEDDING_MODEL
+from core.genai_client import embed_text
 from data.clusters import MACRO_CLUSTERS_CACHE
 from data.synonyms import REVERSE_SYNONYMS, SYNONYMS
 from services.recommender import calculate_user_vector
@@ -128,8 +127,7 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
             query_vector = None
             for attempt in range(2):
                 try:
-                    res = genai.embed_content(model=EMBEDDING_MODEL, content=safe_q, task_type="retrieval_query")
-                    raw_query_vector = res['embedding'][:768]
+                    raw_query_vector = embed_text(safe_q, task_type="retrieval_query")
                     
                     # Interpolar con el Perfil del Usuario
                     if history:
@@ -269,15 +267,11 @@ def get_promotions(conn: sqlite3.Connection = Depends(get_db_dep)):
 def simulate_home_feed(req: SimulateRequest, conn: sqlite3.Connection = Depends(get_db_dep)):
     """Simulador para probar el Cerebro Vectorial en el panel de Admin"""
     try:
-        res = genai.embed_content(
-            model=EMBEDDING_MODEL,
-            content=req.prompt,
-            task_type="retrieval_query"
-        )
-        if not res or 'embedding' not in res:
+        emb = embed_text(req.prompt, task_type="retrieval_query")
+        if not emb:
             return {"status": "error", "error": "No se pudo generar el embedding."}
-            
-        sim_vector = sqlite_vec.serialize_float32(res['embedding'][:768])
+
+        sim_vector = sqlite_vec.serialize_float32(emb)
         c = conn.cursor()
         
         c.execute("""

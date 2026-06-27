@@ -1,10 +1,7 @@
 import numpy as np
 import asyncio
-import google.generativeai as genai
-from core.config import GOOGLE_API_KEY, EMBEDDING_MODEL
+from core.genai_client import embed_text
 from core.database import get_db_connection
-
-genai.configure(api_key=GOOGLE_API_KEY)
 
 DICCIONARIO_CONCEPTOS = {}
 
@@ -96,23 +93,19 @@ def cargar_conceptos_en_memoria():
         rows = conn.execute("SELECT id, embedding FROM concept_vectors").fetchall()
         for row in rows:
             DICCIONARIO_CONCEPTOS[row['id']] = np.frombuffer(row['embedding'], dtype=np.float32)
-        print(f"Loaded {len(DICCIONARIO_CONCEPTOS)} concepts into memory.")
+        print(f"Cargados {len(DICCIONARIO_CONCEPTOS)} conceptos en memoria.")
     except Exception as e:
         print(f"No se pudieron cargar conceptos en memoria (quizás falte correr build_concept_dictionary): {e}")
     finally:
         conn.close()
 
 async def _async_build_concept_dictionary():
-    print("Building concept dictionary...")
+    print("Construyendo diccionario de conceptos...")
     conn = get_db_connection()
-    
+
     for concept_id, description in CONCEPTOS_SEMILLA.items():
         try:
-            res = genai.embed_content(
-                model=EMBEDDING_MODEL,
-                content=description
-            )
-            embedding = np.array(res['embedding'][:768], dtype=np.float32)
+            embedding = np.array(embed_text(description), dtype=np.float32)
             norm = np.linalg.norm(embedding)
             if norm > 0:
                 embedding = embedding / norm
@@ -121,13 +114,13 @@ async def _async_build_concept_dictionary():
                 "INSERT OR REPLACE INTO concept_vectors (id, embedding) VALUES (?, ?)",
                 (concept_id, embedding.tobytes())
             )
-            print(f"Successfully generated embedding for {concept_id}")
+            print(f"Embedding generado correctamente para {concept_id}")
         except Exception as e:
-            print(f"Error generating embedding for {concept_id}: {e}")
-            
+            print(f"Error generando embedding para {concept_id}: {e}")
+
     conn.commit()
     conn.close()
-    print("Concept dictionary generation complete.")
+    print("Generación del diccionario de conceptos completada.")
 
 def build_concept_dictionary():
     """Ejecutar solo una vez o por crontab para generar DB de conceptos"""

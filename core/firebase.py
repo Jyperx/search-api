@@ -35,10 +35,10 @@ def listen_config(macro_clusters: dict, time_rules: list):
                 if 'clusters' in data:
                     macro_clusters.clear()
                     macro_clusters.update(data['clusters'])
-                    print(f"Updated {len(macro_clusters)} clusters from Firestore")
+                    print(f"Actualizados {len(macro_clusters)} clusters desde Firestore")
                 if 'timeRules' in data:
                     time_rules.clear()
                     time_rules.extend(data['timeRules'])
-                    print(f"Updated {len(time_rules)} time rules from Firestore")
+                    print(f"Actualizadas {len(time_rules)} reglas de tiempo desde Firestore")
                     
     doc_ref.on_snapshot(on_snapshot)

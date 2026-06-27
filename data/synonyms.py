@@ -26,6 +26,6 @@ def load_synonyms_from_firestore(db):
                 SYNONYMS[root] = [a.lower().strip() for a in alts]
                 for a in alts:
                     REVERSE_SYNONYMS[a.lower().strip()] = root
-        print(f"Loaded {len(SYNONYMS)} base synonyms (base + auto)")
+        print(f"Cargados {len(SYNONYMS)} sinónimos (base + auto)")
     except Exception as e:
-        print(f"Error loading synonyms: {e}")
+        print(f"Error cargando sinónimos: {e}")

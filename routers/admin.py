@@ -3,12 +3,11 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from typing import List, Optional
-import google.generativeai as genai
 import sqlite_vec
 
 from core.database import get_db_connection, get_db_dep, sqlite_lock, init_db
 import core.firebase
-from core.config import EMBEDDING_MODEL
+from core.genai_client import embed_text, generate_text
 from data.clusters import MACRO_CLUSTERS_CACHE
 from services.recommender import calculate_user_vector
 
@@ -92,18 +91,18 @@ def create_manual_anchor(req: ManualAnchorRequest):
         text = f"{primary_title} - {req.desc}"
         
         import time
-        res = None
+        emb = None
         for attempt in range(3):
             try:
-                res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+                emb = embed_text(text, task_type="retrieval_document")
                 break
             except Exception as e:
                 time.sleep(1)
-                
-        if not res or 'embedding' not in res:
+
+        if not emb:
             return {"status": "error", "message": "Failed to generate embedding"}
-            
-        vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
+
+        vector_blob = sqlite_vec.serialize_float32(emb)
         with sqlite_lock:
             conn = get_db_connection()
             c = conn.cursor()
@@ -128,18 +127,18 @@ def update_manual_anchor(anchor_id: str, req: ManualAnchorRequest):
         text = f"{primary_title} - {req.desc}"
         
         import time
-        res = None
+        emb = None
         for attempt in range(3):
             try:
-                res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+                emb = embed_text(text, task_type="retrieval_document")
                 break
             except Exception as e:
                 time.sleep(1)
-                
-        if not res or 'embedding' not in res:
+
+        if not emb:
             return {"status": "error", "message": "Failed to generate embedding"}
-            
-        vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
+
+        vector_blob = sqlite_vec.serialize_float32(emb)
         with sqlite_lock:
             conn = get_db_connection()
             c = conn.cursor()
@@ -313,8 +312,7 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                 conn.close()
                 
             import json
-            import google.generativeai as genai
-            
+
             prompt = f'''
             Eres un experto en taxonomÔö£┬ía de comercio electrÔö£Ôöénico e inteligencia artificial.
             AquÔö£┬í tienes una muestra de los productos y categorÔö£┬ías de nuestro supermercado/tienda:
@@ -339,21 +337,20 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             Devuelve SOLO EL JSON vÔö£├¡lido, sin cÔö£Ôöédigo de bloque extra ni markdown.
             '''
             models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-pro", "gemini-1.5-flash"]
-            response = None
+            response_text = None
             for m in models_to_try:
                 try:
-                    model = genai.GenerativeModel(m)
-                    response = model.generate_content(prompt)
-                    if response:
-                        print(f"Modelo {m} seleccionado exitosamente para generaciÔö£Ôöén.")
+                    response_text = generate_text(prompt, model=m)
+                    if response_text:
+                        print(f"Modelo {m} seleccionado exitosamente para generación.")
                         break
                 except Exception as e:
-                    print(f"Modelo {m} fallÔö£Ôöé: {e}")
-                    
-            if not response:
-                raise Exception("Todos los modelos generativos fallaron o no estÔö£├¡n disponibles en esta API Key.")
-                
-            raw_text = response.text.strip()
+                    print(f"Modelo {m} falló: {e}")
+
+            if not response_text:
+                raise Exception("Todos los modelos generativos fallaron o no están disponibles en esta API Key.")
+
+            raw_text = response_text.strip()
             if raw_text.startswith("```json"): raw_text = raw_text[7:]
             if raw_text.startswith("```"): raw_text = raw_text[3:]
             if raw_text.endswith("```"): raw_text = raw_text[:-3]
@@ -379,16 +376,16 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                 primary_title = a.get('titles', [a.get('title', 'Explorar')])[0]
                 text = f"{primary_title} - {a.get('desc', '')}"
                 import time
-                res = None
+                emb = None
                 for attempt in range(3):
                     try:
-                        res = genai.embed_content(model=EMBEDDING_MODEL, content=text, task_type="retrieval_document")
+                        emb = embed_text(text, task_type="retrieval_document")
                         break
                     except Exception as e:
                         time.sleep(2 ** attempt)
-                
-                if res and 'embedding' in res:
-                    vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
+
+                if emb:
+                    vector_blob = sqlite_vec.serialize_float32(emb)
                     with sqlite_lock:
                         conn = get_db_connection()
                         c = conn.cursor()
@@ -450,17 +447,16 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
             Debes definir al menos los clusters de clima ("clima_calor", "clima_frio") y algunos temporales (ej: desayuno, almuerzo, noche).
             Usa el operador OR en "keywords" y "negativeKeywords".
             '''
-            macro_response = None
+            macro_text = None
             for m in models_to_try:
                 try:
-                    model = genai.GenerativeModel(m)
-                    macro_response = model.generate_content(prompt_macro)
-                    if macro_response: break
+                    macro_text = generate_text(prompt_macro, model=m)
+                    if macro_text: break
                 except Exception as e:
                     pass
-            
-            if macro_response:
-                r_text = macro_response.text.strip()
+
+            if macro_text:
+                r_text = macro_text.strip()
                 if r_text.startswith("```json"): r_text = r_text[7:]
                 if r_text.startswith("```"): r_text = r_text[3:]
                 if r_text.endswith("```"): r_text = r_text[:-3]
