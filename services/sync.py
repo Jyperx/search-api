@@ -6,7 +6,7 @@ import sqlite_vec
 from concurrent.futures import ThreadPoolExecutor
 from core.database import get_db_connection, sqlite_lock
 from core.config import global_sync_state
-from core.firebase import db
+import core.firebase
 from core.genai_client import embed_text
 from services.embeddings import generate_product_embedding
 
@@ -114,11 +114,12 @@ def do_sync_database():
 
     # OJO: el endpoint /api/sync ya pone is_syncing=True para feedback inmediato.
     # Aquí solo abortamos si no hay Firebase (antes había un deadlock con is_syncing).
-    if not db:
+    if not core.firebase.db:
         global_sync_state["is_syncing"] = False
         global_sync_state["status"] = "error: sin Firebase"
         return
 
+    print("[Sync] Iniciando sincronización desde Firestore...")
     global_sync_state["is_syncing"] = True
     global_sync_state["status"] = "Indexando comercios y productos..."
     global_sync_state["total_products"] = 0
@@ -145,7 +146,7 @@ def do_sync_database():
         conn.close()
         
     try:
-        stores = db.collection('stores').stream()
+        stores = core.firebase.db.collection('stores').stream()
         for store in stores:
             s_data = store.to_dict()
             s_id = store.id
@@ -153,7 +154,7 @@ def do_sync_database():
             s_cat = s_data.get('category', '')
             is_open = int(bool(s_data.get('isOpen', True))) # FIX B1
             
-            products = list(db.collection('stores').document(s_id).collection('products').stream())
+            products = list(core.firebase.db.collection('stores').document(s_id).collection('products').stream())
             
             with sqlite_lock:
                 conn = get_db_connection()
@@ -225,6 +226,7 @@ def do_sync_database():
 
         # Fijar el total ANTES de lanzar las vectorizaciones (los workers reportan progreso)
         total = len(embed_args)
+        print(f"[Sync] Índice reconstruido. Vectorizando {total} productos en segundo plano...")
         global_sync_state["total_products"] = total
         global_sync_state["completed_products"] = 0
         if total == 0:
@@ -270,17 +272,17 @@ def retry_vector_queue_task():
 
 def do_sync_store(store_id: str):
     """Re-sincroniza un solo comercio: refresca su fila + productos en FTS y los vectoriza."""
-    if not db:
+    if not core.firebase.db:
         return
     try:
-        doc = db.collection('stores').document(store_id).get()
+        doc = core.firebase.db.collection('stores').document(store_id).get()
         if not doc.exists:
             return
         s_data = doc.to_dict()
         s_name = s_data.get('name', '')
         s_cat = s_data.get('category', '')
         is_open = int(bool(s_data.get('isOpen', True)))
-        products = list(db.collection('stores').document(store_id).collection('products').stream())
+        products = list(core.firebase.db.collection('stores').document(store_id).collection('products').stream())
 
         with sqlite_lock:
             conn = get_db_connection()
