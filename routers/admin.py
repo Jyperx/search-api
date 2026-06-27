@@ -183,15 +183,18 @@ def delete_manual_anchor(anchor_id: str):
         return {"status": "error", "message": str(e)}
 
 @router.get("/api/admin/cerebro")
-def get_admin_cerebro(page: int = 1, limit: int = 10):
+def get_admin_cerebro(page: int = 1, limit: int = 10, store_page: int = 1, anchor_page: int = 1):
     """Devuelve telemetrÔö£┬ía detallada del Cerebro Vectorial para el panel Admin."""
     try:
         conn = get_db_connection()
         c = conn.cursor()
-        
+
         # 1. Total Vectores Productos
         c.execute("SELECT COUNT(*) as c FROM product_vectors")
         total_product_vectors = c.fetchone()["c"]
+
+        c.execute("SELECT COUNT(*) as c FROM store_vectors")
+        total_store_vectors = c.fetchone()["c"]
         
         c.execute("""
             SELECT a.anchor_id, m.title, m.subtitle, m.section_type, a.embedding, m.is_manual
@@ -227,21 +230,38 @@ def get_admin_cerebro(page: int = 1, limit: int = 10):
             LIMIT ? OFFSET ?
         """, (limit, offset))
         sample_products = [dict(row) for row in c.fetchall()]
-        
+
+        # 4. N comercios vectorizados (Paginados)
+        store_offset = (store_page - 1) * limit
+        c.execute("""
+            SELECT v.store_id, s.name, s.category, length(v.embedding) as vec_bytes
+            FROM store_vectors v
+            JOIN search_index s ON v.store_id = s.id AND s.type = 'store'
+            LIMIT ? OFFSET ?
+        """, (limit, store_offset))
+        sample_stores = [dict(row) for row in c.fetchall()]
+
         conn.close()
-        
+
         return {
             "status": "ok",
             "fts_clusters": MACRO_CLUSTERS_CACHE,
             "vector_metrics": {
                 "total_product_vectors": total_product_vectors,
+                "total_store_vectors": total_store_vectors,
                 "anchors_count": len(anchors),
                 "anchors": anchors,
                 "sample_products": sample_products,
+                "sample_stores": sample_stores,
                 "pagination": {
                     "page": page,
                     "limit": limit,
                     "total": total_product_vectors
+                },
+                "store_pagination": {
+                    "page": store_page,
+                    "limit": limit,
+                    "total": total_store_vectors
                 }
             }
         }

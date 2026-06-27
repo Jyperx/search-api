@@ -1,14 +1,38 @@
 import logging
 import asyncio
+import numpy as np
+import sqlite_vec
 from concurrent.futures import ThreadPoolExecutor
 from core.database import get_db_connection, sqlite_lock
 from core.config import global_sync_state
 from core.firebase import db
+from core.genai_client import embed_text
 from services.embeddings import generate_product_embedding
 
 logger = logging.getLogger(__name__)
 
 vector_worker_pool = ThreadPoolExecutor(max_workers=3)
+
+
+def index_store_vector(store_id: str, name: str, category: str, description: str = ""):
+    """Genera y guarda el embedding de un comercio (para 'Puntos para ti' y búsqueda de tiendas)."""
+    try:
+        text = f"Comercio: {name}. Categoría: {category}. {description or ''}".strip()
+        emb = embed_text(text, task_type="retrieval_document")
+        v = np.array(emb, dtype=np.float32)
+        n = np.linalg.norm(v)
+        if n > 0:
+            v = v / n
+        blob = sqlite_vec.serialize_float32(v.tolist())
+        with sqlite_lock:
+            conn = get_db_connection()
+            # Las tablas vec0 no respetan INSERT OR REPLACE → borrar e insertar
+            conn.execute("DELETE FROM store_vectors WHERE store_id = ?", (store_id,))
+            conn.execute("INSERT INTO store_vectors (store_id, embedding) VALUES (?, ?)", (store_id, blob))
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error indexing store vector {store_id}: {e}")
 
 def async_index_product_vector(product_id: str, name: str, category: str, description: str):
     """Worker sincrónico corriendo en pool"""
@@ -124,8 +148,13 @@ def do_sync_database():
                     ))
                 conn.commit()
                 conn.close()
-                
-            # Background embedding
+
+            # Vectorizar el comercio (en background)
+            vector_worker_pool.submit(
+                index_store_vector, s_id, s_name, s_cat, s_data.get('description', '')
+            )
+
+            # Background embedding de productos
             for p in products:
                 p_data = p.to_dict()
                 if int(bool(p_data.get('available', True))):
@@ -185,7 +214,57 @@ def retry_vector_queue_task():
         )
 
 def do_sync_store(store_id: str):
-    pass # To be implemented if needed
+    """Re-sincroniza un solo comercio: refresca su fila + productos en FTS y los vectoriza."""
+    if not db:
+        return
+    try:
+        doc = db.collection('stores').document(store_id).get()
+        if not doc.exists:
+            return
+        s_data = doc.to_dict()
+        s_name = s_data.get('name', '')
+        s_cat = s_data.get('category', '')
+        is_open = int(bool(s_data.get('isOpen', True)))
+        products = list(db.collection('stores').document(store_id).collection('products').stream())
+
+        with sqlite_lock:
+            conn = get_db_connection()
+            # Borrar comercio + sus productos del índice
+            conn.execute("DELETE FROM search_index WHERE id = ? OR storeId = ?", (store_id, store_id))
+            conn.execute("""
+                INSERT INTO search_index
+                    (id, type, storeId, name, category, description, price, icon, imageUrl,
+                     onSale, salePrice, likes, views, purchases, available, isOpen)
+                VALUES (?, 'store', ?, ?, ?, '', '0', '', '', 0, '', 0, 0, 0, 1, ?)
+            """, (store_id, store_id, s_name, s_cat, is_open))
+            for p in products:
+                p_data = p.to_dict()
+                conn.execute("""
+                    INSERT INTO search_index
+                        (id, type, storeId, name, category, description, price, icon, imageUrl,
+                         onSale, salePrice, likes, views, purchases, available, isOpen)
+                    VALUES (?, 'product', ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    p.id, store_id, p_data.get('name', ''), p_data.get('category', s_cat),
+                    p_data.get('description', ''), str(p_data.get('price', '')),
+                    1 if p_data.get('onSale') else 0, str(p_data.get('salePrice', '')),
+                    p_data.get('likes', 0), p_data.get('views', 0), p_data.get('purchases', 0),
+                    int(bool(p_data.get('available', True))), is_open
+                ))
+            conn.commit()
+            conn.close()
+
+        # Vectorizar comercio + productos
+        vector_worker_pool.submit(index_store_vector, store_id, s_name, s_cat, s_data.get('description', ''))
+        for p in products:
+            p_data = p.to_dict()
+            if int(bool(p_data.get('available', True))):
+                vector_worker_pool.submit(
+                    async_index_product_vector, p.id, p_data.get('name', ''),
+                    p_data.get('category', s_cat), p_data.get('description', '')
+                )
+    except Exception as e:
+        logger.error(f"Error en do_sync_store {store_id}: {e}")
 
 def do_seed_anchors():
     pass # To be implemented if needed
