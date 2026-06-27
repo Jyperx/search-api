@@ -1,0 +1,143 @@
+"""
+Motor de Recomendaciones por Vector de Contexto.
+
+En lugar de anclas fijas, se construye un único "vector de contexto" por petición
+que mezcla el gusto del usuario con pesos CONTINUOS de clima y hora. Todo el catálogo
+se rankea por cercanía a ese vector + señales de popularidad/novedad/oferta.
+"""
+import math
+import time
+import logging
+import requests
+import numpy as np
+import sqlite_vec
+
+from data.concepts import DICCIONARIO_CONCEPTOS
+from services.weather import WEATHER_CACHE_STORE
+
+logger = logging.getLogger(__name__)
+
+
+def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
+    return max(lo, min(hi, x))
+
+
+def _time_bump(hour: int, center: float, spread: float) -> float:
+    """Curva gaussiana de proximidad horaria con wraparound de medianoche."""
+    diff = abs(hour - center)
+    if diff > 12:
+        diff = 24 - diff
+    return math.exp(-(diff ** 2) / (2 * spread ** 2))
+
+
+def get_weather(lat, lng, override_temp=None, override_code=None):
+    """Devuelve (temp, code). Soporta overrides del simulador admin y caché por zona."""
+    if override_temp is not None:
+        return float(override_temp), int(override_code or 0)
+    if lat is None or lng is None:
+        return None, None
+    try:
+        lat_key, lng_key = round(lat, 1), round(lng, 1)
+        loc_key = f"{lat_key}_{lng_key}"
+        now_ts = time.time()
+        cached = WEATHER_CACHE_STORE.get(loc_key)
+        if cached and (now_ts - cached["time"] < 3600):
+            return cached["temp"], cached["code"]
+        w_res = requests.get(
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat_key}&longitude={lng_key}&current_weather=true",
+            timeout=2,
+        ).json()
+        if "current_weather" in w_res:
+            temp = w_res["current_weather"].get("temperature", 20)
+            code = w_res["current_weather"].get("weathercode", 0)
+            WEATHER_CACHE_STORE[loc_key] = {"temp": temp, "code": code, "time": now_ts}
+            return temp, code
+    except Exception as e:
+        logger.warning(f"[Weather] Error obteniendo clima: {e}")
+    return None, None
+
+
+def compute_context_weights(temp, code, hour: int) -> dict:
+    """Pesos CONTINUOS 0..1 de cada concepto ambiental/horario."""
+    weights = {}
+
+    if temp is not None:
+        weights["ENV_CALOR"] = _clamp((temp - 20) / 12)        # 0 a 20°, 1 a 32°+
+        cold = _clamp((18 - temp) / 12)                          # 0 a 18°, 1 a 6°
+        if code is not None and code >= 50:                     # lluvia/niebla → sube frío
+            cold = max(cold, 0.5)
+        weights["ENV_FRIO"] = cold
+
+    if hour is not None:
+        weights["ENV_MANANA"] = _time_bump(hour, 7.5, 2.5)
+        weights["ENV_MEDIODIA"] = _time_bump(hour, 13.0, 2.5)
+        weights["ENV_NOCHE"] = _time_bump(hour, 21.0, 3.0)
+
+    return {k: v for k, v in weights.items() if v > 0.05}
+
+
+def build_context_vector(user_vec_np, weights: dict, Wu: float = 1.0):
+    """
+    Mezcla Wu·usuario + Σ(peso·concepto) y normaliza.
+    - user_vec_np: np.ndarray(768) o None
+    - weights: {concept_id: peso}
+    Retorna bytes serializados para sqlite-vec, o None si no hay señal.
+    """
+    ctx = np.zeros(768, dtype=np.float32)
+    has_signal = False
+
+    if user_vec_np is not None:
+        ctx += Wu * user_vec_np
+        has_signal = True
+
+    for concept_id, w in weights.items():
+        vec = DICCIONARIO_CONCEPTOS.get(concept_id)
+        if vec is not None:
+            ctx += w * vec
+            has_signal = True
+
+    if not has_signal:
+        return None
+
+    norm = np.linalg.norm(ctx)
+    if norm <= 0:
+        return None
+    ctx = ctx / norm
+    return sqlite_vec.serialize_float32(ctx.tolist())
+
+
+def score_product(row: dict, distance: float) -> float:
+    """Fórmula de scoring unificada (afinidad + popularidad + conversión + novedad + oferta)."""
+    affinity = max(0.0, 1.0 - distance)
+    purchases = float(row.get("purchases") or 0)
+    likes = float(row.get("likes") or 0)
+    views = float(row.get("views") or 0)
+
+    cr_boost = 0.0
+    if views >= 10:
+        cr = purchases / views
+        if cr > 0.1:
+            cr_boost = cr * 2.0
+
+    C, m = 20.0, 1.0
+    bayes_purchases = (views * (purchases / (views + 0.1)) + C * m) / (views + C)
+    popularity = math.log1p(bayes_purchases * 5.0 + likes * 0.5) / 10.0
+
+    novelty = 0.2 if (purchases == 0 and views <= 15) else (-0.3 if purchases == 0 and views > 50 else 0.0)
+    sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
+
+    # Ruido determinista por id (estable entre llamadas para el mismo producto)
+    rid = str(row.get("id", ""))
+    noise = (abs(hash(rid)) % 100) / 1000.0
+
+    return (affinity * 0.55) + (popularity * 0.2) + cr_boost + (novelty * 0.1) + (sale_boost * 0.1) + noise
+
+
+def concept_distance(product_emb_bytes: bytes, concept_id: str) -> float:
+    """Distancia coseno de un producto a un concepto ambiental (para filas temáticas)."""
+    vec = DICCIONARIO_CONCEPTOS.get(concept_id)
+    if vec is None or not product_emb_bytes:
+        return 1.0
+    p = np.frombuffer(product_emb_bytes, dtype=np.float32)
+    denom = (np.linalg.norm(p) * np.linalg.norm(vec)) + 1e-10
+    return float(1.0 - np.dot(p, vec) / denom)

@@ -27,6 +27,16 @@ async def lifespan(app: FastAPI):
     # 4. Cargar sinónimos y conceptos
     load_synonyms_from_firestore(core.firebase.db)
     cargar_conceptos_en_memoria()
+
+    # 4.1 Construir conceptos ambientales si faltan (necesarios para el peso clima/hora)
+    from data.concepts import DICCIONARIO_CONCEPTOS, _async_build_concept_dictionary
+    if not DICCIONARIO_CONCEPTOS:
+        try:
+            print("[Conceptos] Vacío. Construyendo diccionario de conceptos ambientales...")
+            await _async_build_concept_dictionary()
+            cargar_conceptos_en_memoria()
+        except Exception as e:
+            print(f"[Conceptos] No se pudieron construir al inicio: {e}")
     
     # Próximamente: iniciar workers y scheduler (Fase 2 y 3)
     yield

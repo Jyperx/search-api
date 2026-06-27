@@ -521,8 +521,27 @@ def update_clusters(body: dict):
 
 @router.get("/api/admin/concepts")
 def get_concepts():
-    from data.concepts import DICCIONARIO_CONCEPTOS_RAW, CATEGORY_WEIGHTS
-    return {"status": "ok", "concepts": DICCIONARIO_CONCEPTOS_RAW, "category_weights": CATEGORY_WEIGHTS}
+    from data.concepts import DICCIONARIO_CONCEPTOS_RAW, CATEGORY_WEIGHTS, DICCIONARIO_CONCEPTOS
+    return {
+        "status": "ok",
+        "concepts": DICCIONARIO_CONCEPTOS_RAW,
+        "category_weights": CATEGORY_WEIGHTS,
+        "loaded_count": len(DICCIONARIO_CONCEPTOS),
+    }
+
+@router.post("/api/admin/build-concepts")
+def build_concepts_endpoint(background_tasks: BackgroundTasks):
+    """Reconstruye los vectores de conceptos ambientales (clima/hora) en background."""
+    def _run():
+        try:
+            from data.concepts import build_concept_dictionary, cargar_conceptos_en_memoria
+            build_concept_dictionary()
+            cargar_conceptos_en_memoria()
+            print("[Conceptos] Reconstrucción completada.")
+        except Exception as e:
+            print(f"[Conceptos] Error reconstruyendo: {e}")
+    background_tasks.add_task(_run)
+    return {"status": "processing", "message": "Construyendo conceptos ambientales en background."}
 
 @router.post("/api/reset-clusters")
 def reset_clusters_to_defaults():
@@ -562,73 +581,6 @@ class ProductPayload(BaseModel):
 
 from core.config import global_sync_state
 from services.sync import do_sync_database, do_seed_anchors, do_sync_store, vector_worker_pool, async_index_product_vector
-
-class PromotionPayload(BaseModel):
-    id: Optional[str] = None
-    type: str = "simple"
-    targetUrl: str = ""
-    imageUrl: str = ""
-    storeId: str = ""
-    emoji: str = ""
-    title: str = ""
-    subtitle: str = ""
-    bg: str = "#1A1A1A"
-    titleColor: str = "#FFFFFF"
-    subtitleColor: str = "#AAAAAA"
-
-@router.get("/api/admin/promotions")
-def list_promotions():
-    try:
-        conn = get_db_connection()
-        rows = conn.execute("SELECT * FROM promotions").fetchall()
-        conn.close()
-        return {"status": "ok", "promotions": [dict(r) for r in rows]}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@router.post("/api/admin/promotions")
-def create_promotion(req: PromotionPayload):
-    try:
-        import uuid
-        promo_id = req.id or ("promo_" + str(uuid.uuid4())[:8])
-        with sqlite_lock:
-            conn = get_db_connection()
-            conn.execute(
-                "INSERT INTO promotions (id, type, targetUrl, imageUrl, storeId, emoji, title, subtitle, bg, titleColor, subtitleColor) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (promo_id, req.type, req.targetUrl, req.imageUrl, req.storeId, req.emoji, req.title, req.subtitle, req.bg, req.titleColor, req.subtitleColor)
-            )
-            conn.commit()
-            conn.close()
-        return {"status": "ok", "id": promo_id}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@router.put("/api/admin/promotions/{promo_id}")
-def update_promotion(promo_id: str, req: PromotionPayload):
-    try:
-        with sqlite_lock:
-            conn = get_db_connection()
-            conn.execute(
-                "UPDATE promotions SET type=?, targetUrl=?, imageUrl=?, storeId=?, emoji=?, title=?, subtitle=?, bg=?, titleColor=?, subtitleColor=? WHERE id=?",
-                (req.type, req.targetUrl, req.imageUrl, req.storeId, req.emoji, req.title, req.subtitle, req.bg, req.titleColor, req.subtitleColor, promo_id)
-            )
-            conn.commit()
-            conn.close()
-        return {"status": "ok"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@router.delete("/api/admin/promotions/{promo_id}")
-def delete_promotion(promo_id: str):
-    try:
-        with sqlite_lock:
-            conn = get_db_connection()
-            conn.execute("DELETE FROM promotions WHERE id = ?", (promo_id,))
-            conn.commit()
-            conn.close()
-        return {"status": "ok"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 
 @router.post("/api/webhook/product")
 def webhook_product_upsert(payload: ProductPayload):

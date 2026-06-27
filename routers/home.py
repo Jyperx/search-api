@@ -2,9 +2,9 @@ import logging
 import math
 import random
 import json
-import time
-import requests
+from collections import defaultdict
 from datetime import datetime, timezone
+import numpy as np
 from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import List, Optional
@@ -12,29 +12,46 @@ from typing import List, Optional
 from core.database import get_db_connection
 from data.clusters import MACRO_CLUSTERS_CACHE, TIME_RULES_CACHE
 from services.recommender import get_or_calculate_user_vector, find_similar_users_products
-from services.weather import WEATHER_CACHE_STORE
+from services.context_engine import (
+    get_weather, compute_context_weights, build_context_vector,
+    score_product, concept_distance,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/home", tags=["Home"])
 
+# Títulos amigables para las filas ambientales (concepto -> opciones)
+ENV_TITLES = {
+    "ENV_CALOR": ["Refréscate", "Para este calorcito", "Algo bien frío"],
+    "ENV_FRIO": ["Para el frío", "Algo calientico", "Entra en calor"],
+    "ENV_MANANA": ["Buenos días", "Para empezar el día", "Desayuno a la vista"],
+    "ENV_MEDIODIA": ["Hora de almorzar", "Para el almuerzo", "Llegó el hambre"],
+    "ENV_NOCHE": ["Plan nocturno", "Para esta noche", "Antojo de noche"],
+}
+
 class HomeFeedRequest(BaseModel):
     activities: List[dict] = []
     lat: Optional[float] = None
     lng: Optional[float] = None
+    override_hour: Optional[int] = None
+    override_weather_temp: Optional[float] = None
+    override_weather_code: Optional[int] = None
+
 
 def build_cluster_fts_query(cluster_name: str, c_val: dict, include_cluster_name: bool = True) -> str:
+    """Construye una query FTS5 a partir de un cluster (usado por el buscador)."""
     cluster_match = c_val.get("keywords", "")
     cluster_words = [w.strip() for w in cluster_match.split(" OR ") if w.strip()]
-    
+
     if include_cluster_name and cluster_name not in cluster_words:
         cluster_words.append(cluster_name)
-        
+
     parts = [f'"{w}"*' for w in cluster_words]
     if not parts:
         return ""
     base_fts = " OR ".join(parts)
-    
+
     neg_keywords_str = c_val.get("negativeKeywords", "")
     neg_parts = []
     if neg_keywords_str:
@@ -42,7 +59,7 @@ def build_cluster_fts_query(cluster_name: str, c_val: dict, include_cluster_name
         if neg_words:
             neg_group = " OR ".join([f'"{w}"*' for w in neg_words])
             neg_parts.append(f"NOT ({neg_group})")
-            
+
     store_cats_str = c_val.get("storeCategories", "")
     cat_parts = []
     if store_cats_str:
@@ -50,348 +67,215 @@ def build_cluster_fts_query(cluster_name: str, c_val: dict, include_cluster_name
         if cats:
             cat_terms = " OR ".join([f'"{cat}"*' for cat in cats])
             cat_parts.append(f"{{category}} : ({cat_terms})")
-            
+
     fts_query_parts = []
     if cat_parts:
         fts_query_parts.append(f"({cat_parts[0]}) AND ({base_fts})")
     else:
         fts_query_parts.append(f"({base_fts})")
-        
+
     if neg_parts:
         fts_query_parts.append(neg_parts[0])
-        
+
     return " ".join(fts_query_parts)
+
 
 @router.post("/{uid}")
 def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
-    """Devuelve el inicio completo (Home Feed) basado en el Motor Híbrido (KNN Vectorial + FTS5)."""
+    """Home Feed por Vector de Contexto: rankea todo el catálogo ponderando gusto + clima + hora."""
     feed_sections = []
     conn = get_db_connection()
     try:
         c = conn.cursor()
-        
+
         now = datetime.now(timezone.utc)
-        current_hour = (now.hour - 5) % 24 # Colombia approx
-        
-        # 1. Obtener o calcular vector de usuario (Fase 3 Cache)
+        base_hour = (now.hour - 5) % 24  # Colombia approx
+        current_hour = req.override_hour if req.override_hour is not None else base_hour
+
+        # 1. Vector de usuario (gusto)
         user_vector = None
+        user_vec_np = None
         if req.activities:
             user_vector = get_or_calculate_user_vector(uid, req.activities, current_hour)
-            
-        global_seen_ids = set()
-        
-        # 2. Cruce 1: Encontrar el Ancla ganadora (Contexto)
-        anchors = []
-        if user_vector:
-            try:
-                c.execute("""
-                    SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles, vec_distance_cosine(a.embedding, ?) AS distance
-                    FROM anchor_vectors a
-                    JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
-                    ORDER BY distance ASC
-                    LIMIT 2
-                """, (user_vector,))
-                anchors = [dict(row) for row in c.fetchall()]
-                
-                # Inyección de Exploración
-                c.execute("""
-                    SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles
-                    FROM anchor_vectors a
-                    JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
-                    WHERE a.anchor_id NOT IN (?, ?)
-                    ORDER BY RANDOM()
-                    LIMIT 1
-                """, (anchors[0]['anchor_id'] if len(anchors) > 0 else '', anchors[1]['anchor_id'] if len(anchors) > 1 else ''))
-                
-                random_anchor = c.fetchone()
-                if random_anchor:
-                    random_anchor = dict(random_anchor)
-                    random_anchor["title"] = "Sal de la rutina"
-                    random_anchor["subtitle"] = "Descubre algo nuevo hoy"
-                    random_anchor["isExploratory"] = True
-                    anchors.append(random_anchor)
-                    
-            except Exception as e:
-                logger.error(f"[Cruce 1] Error en KNN Anclas: {e}")
-        else:
-            try:
-                # Para usuarios nuevos, 2 anclas al azar
-                c.execute("""
-                    SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles
-                    FROM anchor_vectors a
-                    JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
-                    ORDER BY RANDOM()
-                    LIMIT 2
-                """)
-                anchors = [dict(row) for row in c.fetchall()]
-            except Exception as e:
-                logger.error(f"[Cruce 1 Random] Error: {e}")
-                
-        # 3. Cruce 2: Buscar Productos para el Ancla Ganadora
-        for anchor in anchors:
-            try:
-                c.execute("""
-                    SELECT p.product_id, vec_distance_cosine(p.embedding, a.embedding) AS distance,
-                           s.id, s.type, s.storeId, s.name, s.category, s.description,
-                           s.price, s.icon, s.imageUrl, s.onSale, s.salePrice, s.likes, s.views, s.purchases,
-                           st.name as storeName
-                    FROM product_vectors p
-                    JOIN anchor_vectors a ON a.anchor_id = ?
-                    JOIN search_index s ON p.product_id = s.id AND s.type = 'product'
-                    LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') st ON st.id = s.storeId
-                    WHERE CAST(s.available AS INTEGER) = 1 AND CAST(st.isOpen AS INTEGER) = 1
-                    ORDER BY distance ASC
-                    LIMIT 40
-                """, (anchor["anchor_id"],))
-                
-                raw_items = c.fetchall()
-                
-                allowed_categories = []
-                if anchor.get("allowed_categories"):
-                    try: allowed_categories = [cat.lower() for cat in json.loads(anchor["allowed_categories"])]
-                    except: pass
-                    
-                exclude_rules = []
-                if anchor.get("exclude_rules"):
-                    try: exclude_rules = json.loads(anchor["exclude_rules"])
-                    except: pass
-                    
-                candidate_items = []
-                
-                for raw_row in raw_items:
-                    row = dict(raw_row)
-                    if row["distance"] > 0.8:
-                        continue
-                    
-                    cat = str(row.get("category", "")).lower()
-                    if allowed_categories and cat not in allowed_categories:
-                        continue
-                        
-                    name_cat = (str(row.get("name", "")) + " " + cat).lower()
-                    is_excluded = any(rule and rule.lower() in name_cat for rule in exclude_rules)
-                    if is_excluded: continue
-                    
-                    rid = row["id"]
-                    if rid in global_seen_ids: continue
-                    
-                    affinity = max(0.0, 1.0 - row["distance"])
-                    purchases = float(row.get("purchases") or 0)
-                    likes = float(row.get("likes") or 0)
-                    views = float(row.get("views") or 0)
-                    
-                    cr_boost = 0.0
-                    if views >= 10:
-                        cr = purchases / views
-                        if cr > 0.1: cr_boost = cr * 2.0
-                        
-                    C, m = 20.0, 1.0
-                    bayes_purchases = (views * (purchases / (views + 0.1)) + C * m) / (views + C)
-                    
-                    popularity = math.log1p(bayes_purchases * 5.0 + likes * 0.5) / 10.0
-                    novelty = 0.2 if (purchases == 0 and views <= 15) else (-0.3 if purchases == 0 and views > 50 else 0.0)
-                    sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
-                    random_noise = random.uniform(0.0, 0.1)
-                    
-                    row["final_score"] = (affinity * 0.6) + (popularity * 0.2) + cr_boost + (novelty * 0.1) + (sale_boost * 0.1) + random_noise
-                    candidate_items.append(row)
-                    
-                candidate_items.sort(key=lambda x: x["final_score"], reverse=True)
-                
-                store_counts = {}
-                filtered_items = []
-                
-                for row in candidate_items:
-                    rid = row["id"]
-                    sid = row["storeId"]
-                    if store_counts.get(sid, 0) >= 2: continue
-                    
-                    filtered_items.append(row)
-                    global_seen_ids.add(rid)
-                    store_counts[sid] = store_counts.get(sid, 0) + 1
-                    
-                    if len(filtered_items) >= 5:
-                        break
-                        
-                if len(filtered_items) >= 1:
-                    anchor_title = anchor.get("title", "Explorar")
-                    if anchor.get("titles"):
-                        try:
-                            titles_list = json.loads(anchor["titles"])
-                            if titles_list:
-                                anchor_title = random.choice(titles_list)
-                        except: pass
+            if user_vector:
+                user_vec_np = np.frombuffer(user_vector, dtype=np.float32)
 
-                    is_first_personalized = len(feed_sections) == 0 and user_vector is not None
-                    feed_sections.append({
-                        "id": f"dyn_vector_{anchor['anchor_id']}",
-                        "type": "products",
-                        "title": anchor_title,
-                        "subtitle": anchor["subtitle"],
-                        "items": filtered_items,
-                        "isExploratory": anchor.get("isExploratory", False),
-                        "isPersonalized": is_first_personalized,
-                        "layout": "featured" if is_first_personalized else ("grid" if len(filtered_items) >= 4 else "scroll")
-                    })
-            except Exception as e:
-                logger.error(f"[Cruce 2] Error obteniendo productos para ancla {anchor['anchor_id']}: {e}")
-                
-        # 3.5 Collaborative Filtering: "Otros como tú pidieron"
+        # 2. Clima + pesos continuos + vector de contexto
+        temp, code = get_weather(req.lat, req.lng, req.override_weather_temp, req.override_weather_code)
+        weights = compute_context_weights(temp, code, current_hour)
+        ctx = build_context_vector(user_vec_np, weights)
+
+        global_seen_ids = set()
+
+        def take_from_pool(candidates, n, store_cap=2):
+            out = []
+            store_counts = {}
+            for row in candidates:
+                rid = row["id"]
+                sid = row.get("storeId", "")
+                if rid in global_seen_ids:
+                    continue
+                if store_counts.get(sid, 0) >= store_cap:
+                    continue
+                row.pop("embedding", None)  # binario, no serializable a JSON
+                out.append(row)
+                global_seen_ids.add(rid)
+                store_counts[sid] = store_counts.get(sid, 0) + 1
+                if len(out) >= n:
+                    break
+            return out
+
+        # 3. Pool maestro: KNN del catálogo completo contra el contexto
+        pool = []
+        if ctx:
+            c.execute("""
+                SELECT p.product_id, p.embedding, vec_distance_cosine(p.embedding, ?) AS distance,
+                       s.id, s.type, s.storeId, s.name, s.category, s.description,
+                       s.price, s.icon, s.imageUrl, s.onSale, s.salePrice, s.likes, s.views, s.purchases,
+                       st.name as storeName
+                FROM product_vectors p
+                JOIN search_index s ON p.product_id = s.id AND s.type = 'product'
+                LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') st ON st.id = s.storeId
+                WHERE CAST(s.available AS INTEGER) = 1 AND CAST(st.isOpen AS INTEGER) = 1
+                ORDER BY distance ASC
+                LIMIT 200
+            """, (ctx,))
+            for raw in c.fetchall():
+                row = dict(raw)
+                row["final_score"] = score_product(row, row["distance"])
+                pool.append(row)
+        else:
+            # Sin señal (usuario nuevo, sin clima/hora marcada) → popularidad
+            c.execute("""
+                SELECT s.id, s.type, s.storeId, s.name, s.category, s.description,
+                       s.price, s.icon, s.imageUrl, s.onSale, s.salePrice, s.likes, s.views, s.purchases,
+                       st.name as storeName
+                FROM search_index s
+                LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') st ON st.id = s.storeId
+                WHERE s.type = 'product' AND CAST(s.available AS INTEGER) = 1 AND CAST(st.isOpen AS INTEGER) = 1
+                ORDER BY CAST(s.purchases AS INTEGER) DESC, CAST(s.likes AS INTEGER) DESC
+                LIMIT 200
+            """)
+            for raw in c.fetchall():
+                row = dict(raw)
+                row["distance"] = 1.0
+                row["final_score"] = score_product(row, 1.0)
+                pool.append(row)
+
+        pool.sort(key=lambda x: x["final_score"], reverse=True)
+
+        # 4a. "Para ti ahora" (featured) — top del pool
+        featured = take_from_pool(pool, 6)
+        if featured:
+            personalized = user_vector is not None
+            feed_sections.append({
+                "id": "dyn_for_you",
+                "type": "products",
+                "title": "Para ti ahora" if personalized else "Lo mejor ahora",
+                "subtitle": "Según tu gusto, la hora y el clima" if personalized else "Lo más popular para este momento",
+                "items": featured,
+                "isPersonalized": personalized,
+                "layout": "featured",
+            })
+
+        # 4b. Filas ambientales (solo si el peso continuo es significativo)
+        env_rows = 0
+        for concept_id, w in sorted(weights.items(), key=lambda kv: kv[1], reverse=True):
+            if w < 0.5 or concept_id not in ENV_TITLES or env_rows >= 2:
+                continue
+            ranked = sorted(
+                [r for r in pool if r["id"] not in global_seen_ids],
+                key=lambda r: concept_distance(r.get("embedding"), concept_id)
+            )
+            items = take_from_pool(ranked, 6)
+            if len(items) >= 3:
+                feed_sections.append({
+                    "id": f"dyn_env_{concept_id}",
+                    "type": "products",
+                    "title": random.choice(ENV_TITLES[concept_id]),
+                    "subtitle": "Ideal para este momento",
+                    "items": items,
+                    "layout": "scroll",
+                })
+                env_rows += 1
+
+        # 4c. Collaborative filtering — "Otros como tú pidieron"
         if user_vector:
             try:
-                collab_items = find_similar_users_products(uid, user_vector)
-                collab_filtered = [item for item in collab_items if item.get('id') not in global_seen_ids]
-                if len(collab_filtered) >= 2:
-                    for item in collab_filtered:
-                        global_seen_ids.add(item['id'])
+                collab = find_similar_users_products(uid, user_vector)
+                collab = [it for it in collab if it.get("id") not in global_seen_ids]
+                if len(collab) >= 2:
+                    for it in collab:
+                        global_seen_ids.add(it["id"])
                     collab_titles = [
                         "Otros como tú pidieron",
                         "Popular entre usuarios similares",
-                        "Te podría gustar",
-                        "Tendencia entre perfiles similares"
+                        "Tendencia entre perfiles similares",
                     ]
                     feed_sections.append({
                         "id": "dyn_collab_filtering",
                         "type": "products",
                         "title": random.choice(collab_titles),
                         "subtitle": "Basado en usuarios con gustos similares",
-                        "items": collab_filtered,
-                        "layout": "scroll"
+                        "items": collab,
+                        "layout": "scroll",
                     })
             except Exception as e:
                 logger.error(f"[Collaborative Filtering] Error: {e}")
 
-        # 4. Fallback Léxico (FTS5) - MACRO_CLUSTERS_CACHE
-        cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
-        
-        for act in req.activities:
-            cat = (act.get('category') or '').lower()
-            score = 2.0 if act.get('type') == 'search' else 1.0
-            for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
-                if cat in c_val['keywords'].lower() or cat == c_key:
-                    cluster_scores[c_key] += score
-                    
-        for rule in TIME_RULES_CACHE:
-            sh, eh = int(rule.get("startHour", 0)), int(rule.get("endHour", 23))
-            rule_cluster, boost = rule.get("cluster", ""), float(rule.get("scoreBoost", 0))
-            if rule_cluster in cluster_scores:
-                if sh <= eh and sh <= current_hour <= eh:
-                    cluster_scores[rule_cluster] += boost
-                elif sh > eh and (current_hour >= sh or current_hour <= eh):
-                    cluster_scores[rule_cluster] += boost
-                    
-        # 4.1. Reglas Ambientales (Clima Open-Meteo con Caché)
-        if req.lat is not None and req.lng is not None:
-            try:
-                lat_key, lng_key = round(req.lat, 1), round(req.lng, 1)
-                loc_key = f"{lat_key}_{lng_key}"
-                now_ts = time.time()
-                
-                if loc_key in WEATHER_CACHE_STORE and (now_ts - WEATHER_CACHE_STORE[loc_key]["time"] < 3600):
-                    temp = WEATHER_CACHE_STORE[loc_key]["temp"]
-                    code = WEATHER_CACHE_STORE[loc_key]["code"]
-                else:
-                    w_res = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat_key}&longitude={lng_key}&current_weather=true", timeout=2).json()
-                    if "current_weather" in w_res:
-                        temp = w_res["current_weather"].get("temperature", 20)
-                        code = w_res["current_weather"].get("weathercode", 0)
-                        WEATHER_CACHE_STORE[loc_key] = {"temp": temp, "code": code, "time": now_ts}
-                    else:
-                        temp, code = 20, 0
-                        
-                is_night = current_hour < 6 or current_hour >= 18
-                env_anchor_id = None
-                if temp >= 24:
-                    key = "calor_noche" if is_night else "calor_dia"
-                    env_anchor_id = "ENV_CALOR_NOCHE" if is_night else "ENV_CALOR_DIA"
-                    cluster_scores[key] = cluster_scores.get(key, 0) + 15.0
-                elif temp <= 16 or code >= 50:
-                    key = "frio_noche" if is_night else "frio_dia"
-                    env_anchor_id = "ENV_FRIO_NOCHE" if is_night else "ENV_FRIO_DIA"
-                    cluster_scores[key] = cluster_scores.get(key, 0) + 15.0
-                    
-                if env_anchor_id:
-                    c.execute("""
-                        SELECT p.product_id, vec_distance_cosine(p.embedding, a.embedding) AS distance,
-                               s.id, s.type, s.storeId, s.name, s.category, s.description,
-                               s.price, s.icon, s.imageUrl, s.onSale, s.salePrice, s.likes, s.views, s.purchases,
-                               st.name as storeName, a_meta.title, a_meta.subtitle
-                        FROM product_vectors p
-                        JOIN anchor_vectors a ON a.anchor_id = ?
-                        JOIN anchor_metadata a_meta ON a_meta.anchor_id = a.anchor_id
-                        JOIN search_index s ON p.product_id = s.id AND s.type = 'product'
-                        LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') st ON st.id = s.storeId
-                        WHERE CAST(s.available AS INTEGER) = 1 AND CAST(st.isOpen AS INTEGER) = 1
-                        ORDER BY distance ASC
-                        LIMIT 20
-                    """, (env_anchor_id,))
-                    
-                    env_items = c.fetchall()
-                    filtered_env = []
-                    store_counts = {}
-                    env_title = "Para ti"
-                    env_subtitle = ""
-                    
-                    env_candidates = []
-                    for raw_row in env_items:
-                        row = dict(raw_row)
-                        if row["distance"] > 0.8: continue
-                        rid, sid = row["id"], row["storeId"]
-                        if rid in global_seen_ids: continue
-                        
-                        env_title = row.get("title", env_title)
-                        env_subtitle = row.get("subtitle", env_subtitle)
-                        
-                        purchases = float(row.get("purchases") or 0)
-                        views = float(row.get("views") or 0)
-                        likes = float(row.get("likes") or 0)
-                        
-                        cr_boost = 0.0
-                        if views >= 10:
-                            cr = purchases / views
-                            if cr > 0.1: cr_boost = cr * 2.0
-                            
-                        C, m = 20.0, 1.0
-                        bayes_purchases = (views * (purchases / (views + 0.1)) + C * m) / (views + C)
-                        
-                        popularity = math.log1p(bayes_purchases * 5.0 + likes * 0.5) / 10.0
-                        affinity = max(0.0, 1.0 - row["distance"])
-                        
-                        row["final_score"] = (affinity * 0.6) + (popularity * 0.2) + cr_boost
-                        env_candidates.append(row)
-                        
-                    env_candidates.sort(key=lambda x: x["final_score"], reverse=True)
-                    
-                    for row in env_candidates:
-                        rid, sid = row["id"], row["storeId"]
-                        if store_counts.get(sid, 0) >= 3: continue
-                        filtered_env.append(row)
-                        global_seen_ids.add(rid)
-                        store_counts[sid] = store_counts.get(sid, 0) + 1
-                        if len(filtered_env) >= 6: break
-                        
-                    if len(filtered_env) >= 1:
-                        feed_sections.insert(0, {
-                            "id": f"dyn_env_{env_anchor_id}",
-                            "type": "products",
-                            "title": env_title,
-                            "subtitle": env_subtitle,
-                            "items": filtered_env,
-                            "layout": "scroll"
-                        })
-            except Exception as e:
-                logger.error(f"[Weather/Env Vector] Error: {e}")
-                    
-        sorted_clusters = sorted([k for k, v in cluster_scores.items() if v > 0], key=lambda k: cluster_scores[k], reverse=True)
-        top_clusters = sorted_clusters[:2]
-        selected_clusters = top_clusters.copy()
-        
-        # 5. Anti-Bubble: Exploración Estricta de Categorías no visitadas
+        # 4d. Filas por categoría (anclas como etiquetas/títulos)
+        anchor_title_map = {}
         try:
-            user_cats = { (act.get('category') or '').lower() for act in req.activities }
+            c.execute("SELECT allowed_categories, titles, title FROM anchor_metadata")
+            for arow in c.fetchall():
+                arow = dict(arow)
+                try:
+                    cats = json.loads(arow.get("allowed_categories") or "[]")
+                except Exception:
+                    cats = []
+                try:
+                    titles = json.loads(arow.get("titles") or "[]")
+                except Exception:
+                    titles = []
+                if not titles and arow.get("title"):
+                    titles = [arow["title"]]
+                for cat in cats:
+                    if cat:
+                        anchor_title_map.setdefault(cat.lower(), titles)
+        except Exception as e:
+            logger.error(f"[Anchor Titles] Error: {e}")
+
+        cat_groups = defaultdict(list)
+        for r in pool:
+            if r["id"] in global_seen_ids:
+                continue
+            cat = r.get("category") or "general"
+            cat_groups[cat].append(r)
+
+        ordered_cats = sorted(cat_groups.keys(), key=lambda cat: cat_groups[cat][0]["final_score"], reverse=True)
+        for cat in ordered_cats:
+            if len(feed_sections) >= 12:
+                break
+            items = take_from_pool(cat_groups[cat], 5)
+            if len(items) >= 2:
+                titles = anchor_title_map.get(cat.lower())
+                title = random.choice(titles) if titles else cat
+                feed_sections.append({
+                    "id": f"dyn_cat_{str(cat).replace(' ', '_')}",
+                    "type": "products",
+                    "title": title,
+                    "subtitle": "Basado en tus intereses",
+                    "items": items,
+                    "layout": "grid" if len(items) >= 4 else "scroll",
+                })
+
+        # 4e. Anti-Bubble: categoría no visitada por el usuario
+        try:
+            user_cats = {(act.get('category') or '').lower() for act in req.activities}
             c.execute("SELECT DISTINCT category FROM search_index WHERE type='product' AND CAST(available AS INTEGER) = 1")
             all_cats = [row["category"] for row in c.fetchall() if row["category"]]
             unseen_cats = [cat for cat in all_cats if cat.lower() not in user_cats and cat.lower() != 'general']
-            
+
             if unseen_cats:
                 exp_cat = random.choice(unseen_cats)
                 c.execute("""
@@ -404,102 +288,22 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                     ORDER BY RANDOM()
                     LIMIT 15
                 """, (exp_cat,))
-                
-                exp_items = c.fetchall()
-                if len(exp_items) >= 1:
-                    filtered_exp = []
-                    store_counts = {}
-                    for raw_row in exp_items:
-                        row = dict(raw_row)
-                        rid, sid = row["id"], row["storeId"]
-                        if rid in global_seen_ids or store_counts.get(sid, 0) >= 4: continue
-                        filtered_exp.append(row)
-                        global_seen_ids.add(rid)
-                        store_counts[sid] = store_counts.get(sid, 0) + 1
-                        if len(filtered_exp) >= 5: break
-                    
-                    if len(filtered_exp) >= 1:
-                        feed_sections.append({
-                            "id": f"dyn_antibubble_{exp_cat.replace(' ', '_')}",
-                            "type": "products",
-                            "title": f"¿Has probado {exp_cat}?",
-                            "subtitle": "Descubre algo totalmente nuevo",
-                            "items": filtered_exp,
-                            "layout": "grid" if len(filtered_exp) >= 4 else "scroll"
-                        })
+                exp_items = [dict(r) for r in c.fetchall()]
+                filtered_exp = take_from_pool(exp_items, 5)
+                if len(filtered_exp) >= 1:
+                    feed_sections.append({
+                        "id": f"dyn_antibubble_{exp_cat.replace(' ', '_')}",
+                        "type": "products",
+                        "title": f"¿Has probado {exp_cat}?",
+                        "subtitle": "Descubre algo totalmente nuevo",
+                        "items": filtered_exp,
+                        "isExploratory": True,
+                        "layout": "grid" if len(filtered_exp) >= 4 else "scroll",
+                    })
         except Exception as e:
             logger.error(f"[Anti-Bubble] Error: {e}")
-            
-        if not selected_clusters:
-            selected_clusters = ["comida_rapida", "mercado", random.choice(list(MACRO_CLUSTERS_CACHE.keys()))]
-            
-        for cluster in selected_clusters:
-            if cluster not in MACRO_CLUSTERS_CACHE: continue
-            fts_query = build_cluster_fts_query(cluster, MACRO_CLUSTERS_CACHE[cluster], True)
-            if not fts_query: continue
-            
-            title = random.choice(MACRO_CLUSTERS_CACHE[cluster].get("titles", ["Para ti"]))
-            subtitle = "Basado en tus intereses"
-            
-            try:
-                c.execute("""
-                    SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
-                           p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName
-                    FROM search_index p
-                    LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-                    WHERE p.type = 'product' AND search_index MATCH ?
-                    ORDER BY RANDOM()
-                    LIMIT 20
-                """, (fts_query,))
-                
-                raw_items = c.fetchall()
-                candidate_items = []
-                
-                for raw_row in raw_items:
-                    row = dict(raw_row)
-                    rid = row["id"]
-                    if rid in global_seen_ids: continue
-                    
-                    purchases = float(row.get("purchases") or 0)
-                    likes = float(row.get("likes") or 0)
-                    views = float(row.get("views") or 0)
-                    
-                    popularity = math.log1p(purchases + likes * 0.5) / 10.0
-                    novelty = 0.2 if (purchases == 0 and views <= 15) else (-0.3 if purchases == 0 and views > 50 else 0.0)
-                    sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
-                    random_noise = (abs(hash(rid)) % 100) / 1000.0
-                    
-                    row["final_score"] = popularity + novelty + sale_boost + random_noise
-                    candidate_items.append(row)
-                    
-                candidate_items.sort(key=lambda x: x["final_score"], reverse=True)
-                
-                store_counts = {}
-                filtered_items = []
-                
-                for row in candidate_items:
-                    rid = row["id"]
-                    sid = row["storeId"]
-                    if store_counts.get(sid, 0) >= 2: continue
-                    filtered_items.append(row)
-                    global_seen_ids.add(rid)
-                    store_counts[sid] = store_counts.get(sid, 0) + 1
-                    if len(filtered_items) >= 5: break
-                        
-                if len(filtered_items) >= 1:
-                    feed_sections.append({
-                        "id": f"dyn_fts_{cluster}",
-                        "type": "products",
-                        "title": title,
-                        "subtitle": subtitle,
-                        "items": filtered_items,
-                        "layout": "grid" if len(filtered_items) >= 4 else "scroll"
-                    })
-            except Exception as e:
-                logger.error(f"[FTS Fallback] Error en cluster {cluster}: {e}")
 
-        # 6. Tiendas Recomendadas
+        # 4f. Tiendas recomendadas
         try:
             if user_vector:
                 c.execute("""
@@ -521,32 +325,25 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                     ORDER BY CAST(st.likes AS INTEGER) DESC
                     LIMIT 200
                 """)
-                
-            store_rows = c.fetchall()
-            category_counts = {}
-            recommended_stores = []
-            
+
             candidate_stores = []
-            for raw_row in store_rows:
+            for raw_row in c.fetchall():
                 row = dict(raw_row)
                 likes_val = int(row["likes"] or 0)
                 distance = row.get("distance", 1.0)
-                
                 affinity = max(0.0, 1.0 - distance)
                 novelty = 0.2 if likes_val < 5 else 0.0
-                random_noise = random.uniform(0.0, 0.15)
-                
-                final_score = affinity + (math.log1p(likes_val) / 20.0) + novelty + random_noise
-                row["final_score"] = final_score
+                row["final_score"] = affinity + (math.log1p(likes_val) / 20.0) + novelty + random.uniform(0.0, 0.15)
                 candidate_stores.append(row)
-                
+
             candidate_stores.sort(key=lambda x: x["final_score"], reverse=True)
-            
+
+            category_counts = {}
+            recommended_stores = []
             for row in candidate_stores:
                 cat = row["category"]
                 if category_counts.get(cat, 0) < 3:
                     likes_val = int(row["likes"] or 0)
-                    rating_val = round(min(5.0, 4.0 + (likes_val / 100)), 1)
                     recommended_stores.append({
                         "id": row["store_id"],
                         "name": row["name"],
@@ -556,13 +353,13 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                         "logoUrl": row["imageUrl"],
                         "likes": likes_val,
                         "time": "15-25 min",
-                        "rating": rating_val,
+                        "rating": round(min(5.0, 4.0 + (likes_val / 100)), 1),
                         "deliveryFee": 0,
                         "open": True,
-                        "type": "store"
+                        "type": "store",
                     })
                     category_counts[cat] = category_counts.get(cat, 0) + 1
-                    
+
             if recommended_stores:
                 insert_pos = min(2, len(feed_sections))
                 feed_sections.insert(insert_pos, {
@@ -570,7 +367,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                     "type": "stores",
                     "title": "Puntos para ti",
                     "subtitle": "Basado en tus gustos",
-                    "items": recommended_stores
+                    "items": recommended_stores,
                 })
         except Exception as e:
             logger.error(f"[Stores Vector] Error: {e}")
@@ -580,23 +377,5 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         return {"sections": []}
     finally:
         conn.close()
-
-    # Post-processing: enforce category diversity across consecutive sections
-    if len(feed_sections) >= 3:
-        def dominant_cat(section):
-            items = section.get("items", [])
-            cats = [str(i.get("category", "")).lower() for i in items if i.get("category")]
-            if not cats: return ""
-            return max(set(cats), key=cats.count)
-
-        i = 2
-        while i < len(feed_sections):
-            if all(s.get("type") == "products" for s in feed_sections[i-2:i+1]):
-                cats = [dominant_cat(s) for s in feed_sections[i-2:i+1]]
-                if cats[0] and cats[0] == cats[1] == cats[2]:
-                    exploratory = [s for s in feed_sections if s.get("isExploratory")]
-                    if not exploratory:
-                        random.shuffle(feed_sections[i-1:i+1])
-            i += 1
 
     return {"sections": feed_sections}
