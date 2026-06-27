@@ -29,7 +29,7 @@ async def _call_gemini_embedding(text: str) -> np.ndarray | None:
     try:
         def _blocking_call():
             res = genai.embed_content(model=EMBEDDING_MODEL, content=text)
-            embedding = np.array(res['embedding'], dtype=np.float32)
+            embedding = np.array(res['embedding'][:768], dtype=np.float32)  # truncar (Matryoshka) a la dim de las tablas vec0
             norm = np.linalg.norm(embedding)
             return embedding / norm if norm > 0 else embedding
             

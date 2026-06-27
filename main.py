@@ -26,6 +26,8 @@ async def lifespan(app: FastAPI):
     
     # 4. Cargar sinónimos y conceptos
     load_synonyms_from_firestore(core.firebase.db)
+    from data.concepts import load_concept_texts_from_firestore
+    load_concept_texts_from_firestore(core.firebase.db)
     cargar_conceptos_en_memoria()
 
     # 4.1 Construir conceptos ambientales si faltan (necesarios para el peso clima/hora)

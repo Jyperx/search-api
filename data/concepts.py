@@ -71,7 +71,25 @@ CONCEPTOS_SEMILLA = {
     ),
 }
 
+def load_concept_texts_from_firestore(db):
+    """Sobrescribe los textos por defecto con los editados desde el admin (config/concepts)."""
+    if not db:
+        return
+    try:
+        doc = db.collection('config').document('concepts').get()
+        if doc.exists:
+            texts = (doc.to_dict() or {}).get('texts') or {}
+            for k, v in texts.items():
+                if isinstance(v, str) and v.strip():
+                    CONCEPTOS_SEMILLA[k] = v
+            if texts:
+                print(f"[Conceptos] {len(texts)} textos cargados desde Firestore.")
+    except Exception as e:
+        print(f"[Conceptos] No se pudieron cargar textos de Firestore: {e}")
+
+
 def cargar_conceptos_en_memoria():
+    DICCIONARIO_CONCEPTOS_RAW.clear()
     DICCIONARIO_CONCEPTOS_RAW.update(CONCEPTOS_SEMILLA)
     conn = get_db_connection()
     try:
@@ -94,9 +112,11 @@ async def _async_build_concept_dictionary():
                 model=EMBEDDING_MODEL,
                 content=description
             )
-            embedding = np.array(res['embedding'], dtype=np.float32)
-            embedding = embedding / np.linalg.norm(embedding)
-            
+            embedding = np.array(res['embedding'][:768], dtype=np.float32)
+            norm = np.linalg.norm(embedding)
+            if norm > 0:
+                embedding = embedding / norm
+
             conn.execute(
                 "INSERT OR REPLACE INTO concept_vectors (id, embedding) VALUES (?, ?)",
                 (concept_id, embedding.tobytes())

@@ -7,7 +7,7 @@ import google.generativeai as genai
 import sqlite_vec
 
 from core.database import get_db_connection, get_db_dep, sqlite_lock, init_db
-from core.firebase import db
+import core.firebase
 from core.config import EMBEDDING_MODEL
 from data.clusters import MACRO_CLUSTERS_CACHE
 from services.recommender import calculate_user_vector
@@ -29,7 +29,7 @@ class ManualAnchorRequest(BaseModel):
 def get_admin_users_vectors(page: int = 1, limit: int = 10):
     """Devuelve los perfiles vectoriales de los usuarios activos calculando su afinidad actual."""
     try:
-        users_ref = db.collection('users')
+        users_ref = core.firebase.db.collection('users')
         # PaginaciÔö£Ôöén bÔö£├¡sica en Firestore
         offset = (page - 1) * limit
         users = users_ref.offset(offset).limit(limit).stream()
@@ -103,7 +103,7 @@ def create_manual_anchor(req: ManualAnchorRequest):
         if not res or 'embedding' not in res:
             return {"status": "error", "message": "Failed to generate embedding"}
             
-        vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+        vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
         with sqlite_lock:
             conn = get_db_connection()
             c = conn.cursor()
@@ -139,7 +139,7 @@ def update_manual_anchor(anchor_id: str, req: ManualAnchorRequest):
         if not res or 'embedding' not in res:
             return {"status": "error", "message": "Failed to generate embedding"}
             
-        vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+        vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
         with sqlite_lock:
             conn = get_db_connection()
             c = conn.cursor()
@@ -388,7 +388,7 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                         time.sleep(2 ** attempt)
                 
                 if res and 'embedding' in res:
-                    vector_blob = sqlite_vec.serialize_float32(res['embedding'])
+                    vector_blob = sqlite_vec.serialize_float32(res['embedding'][:768])
                     with sqlite_lock:
                         conn = get_db_connection()
                         c = conn.cursor()
@@ -469,9 +469,9 @@ def auto_generate_anchors(background_tasks: BackgroundTasks):
                 new_clusters = macro_data.get("clusters")
                 new_time_rules = macro_data.get("time_rules")
                 
-                if new_clusters and new_time_rules and db:
+                if new_clusters and new_time_rules and core.firebase.db:
                     # Sincronizar globalmente en Firebase
-                    db.collection('config').document('algorithm').set({
+                    core.firebase.db.collection('config').document('algorithm').set({
                         "clusters": new_clusters,
                         "time_rules": new_time_rules
                     }, merge=True)
@@ -511,8 +511,8 @@ def update_clusters(body: dict):
         new_clusters = body.get("clusters", {})
         if not new_clusters:
             return {"status": "error", "message": "No clusters provided"}
-        if db:
-            db.collection('config').document('algorithm').set({"clusters": new_clusters}, merge=True)
+        if core.firebase.db:
+            core.firebase.db.collection('config').document('algorithm').set({"clusters": new_clusters}, merge=True)
         MACRO_CLUSTERS_CACHE.clear()
         MACRO_CLUSTERS_CACHE.update(new_clusters)
         return {"status": "ok", "count": len(new_clusters)}
@@ -528,6 +528,34 @@ def get_concepts():
         "category_weights": CATEGORY_WEIGHTS,
         "loaded_count": len(DICCIONARIO_CONCEPTOS),
     }
+
+@router.put("/api/admin/concepts")
+def update_concepts(body: dict, background_tasks: BackgroundTasks):
+    """Edita los textos de los conceptos ambientales (clima/hora), persiste en Firestore y regenera embeddings."""
+    try:
+        texts = body.get("concepts", {})
+        if not texts:
+            return {"status": "error", "message": "No concepts provided"}
+        from data.concepts import CONCEPTOS_SEMILLA, DICCIONARIO_CONCEPTOS_RAW
+        for k, v in texts.items():
+            if isinstance(v, str) and v.strip():
+                CONCEPTOS_SEMILLA[k] = v
+                DICCIONARIO_CONCEPTOS_RAW[k] = v
+        if core.firebase.db:
+            core.firebase.db.collection('config').document('concepts').set({"texts": CONCEPTOS_SEMILLA}, merge=True)
+
+        def _rebuild():
+            try:
+                from data.concepts import build_concept_dictionary, cargar_conceptos_en_memoria
+                build_concept_dictionary()
+                cargar_conceptos_en_memoria()
+                print("[Conceptos] Embeddings regenerados tras edición.")
+            except Exception as e:
+                print(f"[Conceptos] Error regenerando: {e}")
+        background_tasks.add_task(_rebuild)
+        return {"status": "ok", "message": "Conceptos guardados. Regenerando embeddings en background."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @router.post("/api/admin/build-concepts")
 def build_concepts_endpoint(background_tasks: BackgroundTasks):
@@ -547,10 +575,10 @@ def build_concepts_endpoint(background_tasks: BackgroundTasks):
 def reset_clusters_to_defaults():
     """Empuja los defaults del cÔö£Ôöédigo a Firestore, reemplazando los clÔö£Ôòæsteres existentes.
     Ôö£├£til cuando los clÔö£Ôòæsteres en Firestore estÔö£├¡n desactualizados (sin storeCategories, etc.)."""
-    if not db:
+    if not core.firebase.db:
         raise HTTPException(status_code=500, detail="Firebase no estÔö£├¡ inicializado.")
     try:
-        doc_ref = db.collection('config').document('algorithm')
+        doc_ref = core.firebase.db.collection('config').document('algorithm')
         doc_ref.set({"clusters": MACRO_CLUSTERS_CACHE}, merge=True)
         return {
             "message": f"├ö┬ú├á {len(MACRO_CLUSTERS_CACHE)} clÔö£Ôòæsteres reseteados a los defaults V3.2 correctamente.",

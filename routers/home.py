@@ -37,6 +37,7 @@ class HomeFeedRequest(BaseModel):
     override_hour: Optional[int] = None
     override_weather_temp: Optional[float] = None
     override_weather_code: Optional[int] = None
+    sim_prompt: Optional[str] = None  # solo simulador admin: describe el gusto y se embebe como vector de usuario
 
 
 def build_cluster_fts_query(cluster_name: str, c_val: dict, include_cluster_name: bool = True) -> str:
@@ -99,6 +100,21 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             user_vector = get_or_calculate_user_vector(uid, req.activities, current_hour)
             if user_vector:
                 user_vec_np = np.frombuffer(user_vector, dtype=np.float32)
+
+        # 1.1 Simulador admin: convertir el prompt de gusto en vector de usuario
+        if req.sim_prompt and user_vec_np is None:
+            try:
+                import sqlite_vec
+                import google.generativeai as genai
+                from core.config import EMBEDDING_MODEL
+                res = genai.embed_content(model=EMBEDDING_MODEL, content=req.sim_prompt, task_type="retrieval_query")
+                v = np.array(res['embedding'][:768], dtype=np.float32)
+                n = np.linalg.norm(v)
+                if n > 0:
+                    user_vec_np = v / n
+                    user_vector = sqlite_vec.serialize_float32(user_vec_np.tolist())
+            except Exception as e:
+                logger.warning(f"[Sim Prompt] No se pudo embeber el prompt: {e}")
 
         # 2. Clima + pesos continuos + vector de contexto
         temp, code = get_weather(req.lat, req.lng, req.override_weather_temp, req.override_weather_code)

@@ -8,7 +8,7 @@ import google.generativeai as genai
 import sqlite_vec
 
 from core.database import get_db_dep, sqlite_lock
-from core.firebase import db
+import core.firebase
 from core.config import EMBEDDING_MODEL
 from data.clusters import MACRO_CLUSTERS_CACHE
 from data.synonyms import REVERSE_SYNONYMS, SYNONYMS
@@ -389,8 +389,8 @@ def get_user_recommendations(uid: str, conn: sqlite3.Connection = Depends(get_db
             except: return 1.0
             
         activities = []
-        if db:
-            user_doc = db.collection('users').document(uid).get()
+        if core.firebase.db:
+            user_doc = core.firebase.db.collection('users').document(uid).get()
             if user_doc.exists:
                 user_data = user_doc.to_dict() or {}
                 activities = user_data.get('recent_activity', [])
