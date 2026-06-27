@@ -1,5 +1,6 @@
 import logging
 import asyncio
+import threading
 import numpy as np
 import sqlite_vec
 from concurrent.futures import ThreadPoolExecutor
@@ -10,6 +11,23 @@ from core.genai_client import embed_text
 from services.embeddings import generate_product_embedding
 
 logger = logging.getLogger(__name__)
+
+_progress_lock = threading.Lock()
+
+
+def _report_vector_progress():
+    """Avanza el contador de la barra de sync (thread-safe). Apaga la barra al terminar."""
+    if not global_sync_state.get("is_syncing"):
+        return
+    with _progress_lock:
+        done = global_sync_state.get("completed_products", 0) + 1
+        total = global_sync_state.get("total_products", 0)
+        global_sync_state["completed_products"] = done
+        if total > 0 and done >= total:
+            global_sync_state["is_syncing"] = False
+            global_sync_state["status"] = "Completado"
+        else:
+            global_sync_state["status"] = f"Vectorizando {done}/{total}..."
 
 vector_worker_pool = ThreadPoolExecutor(max_workers=3)
 
@@ -87,6 +105,8 @@ def async_index_product_vector(product_id: str, name: str, category: str, descri
             conn.close()
     except Exception as e:
         logger.error(f"Error in async vector indexing for {product_id}: {e}")
+    finally:
+        _report_vector_progress()  # garantiza que la barra avance aunque falle el embedding
 
 def do_sync_database():
     """Sincronización masiva de Firestore a SQLite (FTS5 + Vectores)"""
@@ -101,7 +121,10 @@ def do_sync_database():
 
     global_sync_state["is_syncing"] = True
     global_sync_state["status"] = "Indexando comercios y productos..."
-    
+    global_sync_state["total_products"] = 0
+    global_sync_state["completed_products"] = 0
+    embed_args = []
+
     # FIX B2: Cancelar workers anteriores
     vector_worker_pool.shutdown(wait=False, cancel_futures=True)
     vector_worker_pool = ThreadPoolExecutor(max_workers=3)
@@ -180,18 +203,12 @@ def do_sync_database():
             )
             index_store_location(s_id, s_data.get('location'))
 
-            # Background embedding de productos
+            # Recolectar productos a vectorizar (se lanzan DESPUÉS de fijar el total, sin carrera)
             for p in products:
                 p_data = p.to_dict()
                 if int(bool(p_data.get('available', True))):
-                    vector_worker_pool.submit(
-                        async_index_product_vector, 
-                        p.id, 
-                        p_data.get('name', ''), 
-                        p_data.get('category', s_cat), 
-                        p_data.get('description', '')
-                    )
-                
+                    embed_args.append((p.id, p_data.get('name', ''), p_data.get('category', s_cat), p_data.get('description', '')))
+
         # FIX B2: Aplicar Swap atómico
         with sqlite_lock:
             conn = get_db_connection()
@@ -205,12 +222,24 @@ def do_sync_database():
             conn.execute("DROP TABLE IF EXISTS search_index_old")
             conn.commit()
             conn.close()
-            
+
+        # Fijar el total ANTES de lanzar las vectorizaciones (los workers reportan progreso)
+        total = len(embed_args)
+        global_sync_state["total_products"] = total
+        global_sync_state["completed_products"] = 0
+        if total == 0:
+            global_sync_state["is_syncing"] = False
+            global_sync_state["status"] = "Sin productos para vectorizar"
+        else:
+            global_sync_state["status"] = f"Vectorizando 0/{total}..."
+            for args in embed_args:
+                vector_worker_pool.submit(async_index_product_vector, *args)
+            # is_syncing queda True; los workers la apagan al llegar a total
+
     except Exception as e:
         logger.error(f"Sync failed: {e}")
-    finally:
         global_sync_state["is_syncing"] = False
-        global_sync_state["status"] = "idle"
+        global_sync_state["status"] = f"error: {e}"
 
 def retry_vector_queue_task():
     """Función para el scheduler de APScheduler para reintentos"""

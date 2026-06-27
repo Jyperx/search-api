@@ -905,20 +905,23 @@ def _do_seed_demo():
             conn.commit()
             conn.close()
 
-        # Vectorizar en background
+        # Fijar el total de productos ANTES de lanzar (los workers reportan progreso)
+        product_jobs = [j for j in embed_jobs if j[0] == 'product']
+        global_sync_state["total_products"] = len(product_jobs)
+        global_sync_state["completed_products"] = 0
+        global_sync_state["status"] = f"Vectorizando 0/{len(product_jobs)}..."
+
         for job in embed_jobs:
             if job[0] == 'store':
                 vector_worker_pool.submit(index_store_vector, job[1], job[2], job[3], job[4])
             else:
                 vector_worker_pool.submit(async_index_product_vector, job[1], job[2], job[3], job[4])
-
-        global_sync_state["status"] = f"Demo creada: {len(DEMO_STORES)} comercios, {len(rows) - len(DEMO_STORES)} productos"
-        print(f"[Seed Demo] Listo: {len(rows)} filas indexadas, vectorizando en background.")
+        # is_syncing queda True; los workers la apagan al completar la vectorización
+        print(f"[Seed Demo] {len(rows)} filas indexadas, vectorizando {len(product_jobs)} productos...")
     except Exception as e:
         import traceback
         traceback.print_exc()
         global_sync_state["status"] = f"error demo: {e}"
-    finally:
         global_sync_state["is_syncing"] = False
 
 
