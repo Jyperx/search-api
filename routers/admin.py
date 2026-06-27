@@ -254,9 +254,12 @@ def get_admin_cerebro(page: int = 1, limit: int = 10, store_page: int = 1, ancho
 
         conn.close()
 
+        from data.synonyms import SYNONYMS
+
         return {
             "status": "ok",
             "fts_clusters": MACRO_CLUSTERS_CACHE,
+            "synonyms": SYNONYMS,
             "vector_metrics": {
                 "total_product_vectors": total_product_vectors,
                 "total_store_vectors": total_store_vectors,
@@ -540,6 +543,45 @@ def reset_vectors_db():
         init_db()
         return {"status": "ok", "message": "Vectores limpiados correctamente."}
     except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+class SynonymGroup(BaseModel):
+    root: str
+    alternatives: List[str] = []
+
+@router.get("/api/admin/synonyms")
+def get_synonyms():
+    from data.synonyms import SYNONYMS
+    return {"status": "ok", "synonyms": SYNONYMS}
+
+@router.post("/api/admin/synonyms")
+def upsert_synonym(req: SynonymGroup):
+    from data.synonyms import set_synonym_group
+    try:
+        set_synonym_group(core.firebase.db, req.root, req.alternatives)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.delete("/api/admin/synonyms/{root}")
+def remove_synonym(root: str):
+    from data.synonyms import delete_synonym_group
+    try:
+        delete_synonym_group(core.firebase.db, root)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.post("/api/admin/auto-learn-synonyms")
+def auto_learn_synonyms():
+    """Aprendizaje matemático de sinónimos por co-clics (sin IA)."""
+    from data.synonyms import learn_synonyms_from_clicks
+    try:
+        learned = learn_synonyms_from_clicks(core.firebase.db)
+        return {"status": "ok", "learned": learned, "count": len(learned)}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
 @router.get("/api/admin/clusters")
