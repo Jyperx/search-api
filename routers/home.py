@@ -240,16 +240,26 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 "layout": "featured",
             })
 
-        # 4b. Filas ambientales (solo si el peso continuo es significativo)
+        # 4b. Filas ambientales (solo si el peso es significativo Y hay productos realmente afines)
         env_rows = 0
         for concept_id, w in sorted(weights.items(), key=lambda kv: kv[1], reverse=True):
             if w < 0.5 or concept_id not in ENV_TITLES or env_rows >= 2:
                 continue
-            ranked = sorted(
-                [r for r in pool if r["id"] not in global_seen_ids],
-                key=lambda r: concept_distance(r.get("embedding"), concept_id)
-            )
-            items = take_from_pool(ranked, 6)
+            # Distancia de cada producto al concepto (una sola vez)
+            scored = []
+            for r in pool:
+                if r["id"] in global_seen_ids:
+                    continue
+                d = concept_distance(r.get("embedding"), concept_id)
+                scored.append((d, r))
+            scored.sort(key=lambda x: x[0])
+            if not scored:
+                continue
+            # Corte de relevancia: solo productos cerca del mejor (evita rellenar con cosas no afines)
+            best = scored[0][0]
+            cutoff = min(best + 0.12, 0.6)
+            relevant = [r for d, r in scored if d <= cutoff]
+            items = take_from_pool(relevant, 6)
             if len(items) >= 3:
                 feed_sections.append({
                     "id": f"dyn_env_{concept_id}",
