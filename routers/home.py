@@ -197,10 +197,16 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
 
         pool.sort(key=lambda x: x["final_score"], reverse=True)
 
-        # 4a. "Para ti ahora" (featured) — top del pool
-        featured = take_from_pool(pool, 6)
+        # 4a. "Para ti ahora" (featured)
+        # Si hay gusto del usuario, ordenamos por AFINIDAD PURA (cercanía al gusto), no por
+        # popularidad — así no se cuelan productos populares pero irrelevantes (p.ej. papel higiénico).
+        personalized = user_vector is not None
+        if personalized:
+            featured_candidates = sorted(pool, key=lambda x: x.get("distance", 1.0))
+        else:
+            featured_candidates = pool  # usuario nuevo → ya está ordenado por popularidad/contexto
+        featured = take_from_pool(featured_candidates, 6)
         if featured:
-            personalized = user_vector is not None
             feed_sections.append({
                 "id": "dyn_for_you",
                 "type": "products",
