@@ -163,10 +163,19 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         if user_vector is None and req.preferred_categories:
             pref_set = {c.strip().lower() for c in req.preferred_categories if c}
 
+        # Afinidad de tienda: cuántas veces visitó cada comercio (de la actividad reciente)
+        store_visits = {}
+        for act in req.activities:
+            if act.get('type') == 'view_store' and act.get('storeId'):
+                store_visits[act['storeId']] = store_visits.get(act['storeId'], 0) + 1
+
         def add_proximity(row):
-            """Suma boost por cercanía (+ cold-start de gustos) al final_score."""
+            """Suma boost por cercanía + cold-start de gustos + afinidad de tienda al final_score."""
             if pref_set and str(row.get("category", "")).lower() in pref_set:
                 row["final_score"] = row.get("final_score", 0) + 0.4  # empuje de gustos declarados
+            visits = store_visits.get(row.get("storeId"))
+            if visits:
+                row["final_score"] = row.get("final_score", 0) + min(0.35, 0.12 * visits)  # tiendas que frecuentas
             if not store_loc or req.lat is None:
                 return
             loc = store_loc.get(row.get("storeId"))

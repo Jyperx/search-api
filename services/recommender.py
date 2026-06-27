@@ -48,10 +48,11 @@ def calculate_time_decay_func(ts) -> float:
     except:
         return 0.5
 
-def calculate_user_vector(activity_docs: list, current_hour: int) -> bytes | None:
+def calculate_user_vector(activity_docs: list, current_hour: int, include_search: bool = False) -> bytes | None:
     product_ids = []
     decay_weights = {}
-    
+    search_queries = []  # (query, peso) — solo se embeben si include_search
+
     for doc in activity_docs:
         data = doc.to_dict() if hasattr(doc, 'to_dict') else doc
         p_id = data.get('productId')
@@ -100,34 +101,59 @@ def calculate_user_vector(activity_docs: list, current_hour: int) -> bytes | Non
             if p_id not in decay_weights:
                 product_ids.append(p_id)
             decay_weights[p_id] = decay_weights.get(p_id, 0.0) + weight
-            
-    if not product_ids:
+        elif act_type == 'search' and data.get('query'):
+            q = str(data.get('query')).strip()
+            if q:
+                search_queries.append((q, calculate_time_decay_func(ts) * act_multiplier))
+
+    if not product_ids and not (include_search and search_queries):
         return None
-        
-    conn = get_db_connection()
-    placeholders = ','.join(['?'] * len(product_ids))
-    rows = conn.execute(f"SELECT product_id, embedding FROM product_vectors WHERE product_id IN ({placeholders})", tuple(product_ids)).fetchall()
-    conn.close()
-    
+
     vectors_map = {}
-    for row in rows:
-        if row['embedding']:
-            vectors_map[row['product_id']] = np.frombuffer(row['embedding'], dtype=np.float32)
-            
+    if product_ids:
+        conn = get_db_connection()
+        placeholders = ','.join(['?'] * len(product_ids))
+        rows = conn.execute(f"SELECT product_id, embedding FROM product_vectors WHERE product_id IN ({placeholders})", tuple(product_ids)).fetchall()
+        conn.close()
+        for row in rows:
+            if row['embedding']:
+                vectors_map[row['product_id']] = np.frombuffer(row['embedding'], dtype=np.float32)
+
     user_vector = np.zeros(768, dtype=np.float32)
     total_weight = 0.0
-    
+
     for p_id in product_ids:
         if p_id in vectors_map:
             vec = vectors_map[p_id]
             w = decay_weights[p_id]
             user_vector += (vec * w)
             total_weight += w
-            
+
+    # Búsquedas → vector de gusto (intención fuerte). Solo las 2 más recientes/pesadas, por costo.
+    if include_search and search_queries:
+        try:
+            from core.genai_client import embed_text
+            search_queries.sort(key=lambda x: x[1], reverse=True)
+            seen_q = set()
+            for q, w in search_queries:
+                ql = q.lower()
+                if ql in seen_q:
+                    continue
+                seen_q.add(ql)
+                if len(seen_q) > 2:
+                    break
+                qv = np.array(embed_text(q, task_type="retrieval_query"), dtype=np.float32)
+                n = np.linalg.norm(qv)
+                if n > 0:
+                    user_vector += (qv / n) * w
+                    total_weight += w
+        except Exception as e:
+            logger.warning(f"[UserVector] No se pudieron embeber búsquedas: {e}")
+
     if total_weight > 0:
         user_vector = user_vector / total_weight
         return sqlite_vec.serialize_float32(user_vector.tolist())
-        
+
     return None
 
 def persist_user_vector(user_id: str, vector_bytes: bytes, event_count: int):
@@ -237,9 +263,9 @@ def get_or_calculate_user_vector(user_id: str, activity_docs: list, current_hour
         except Exception as e:
             logger.warning(f"Error parsing date for user {user_id}: {e}")
 
-    # No hay caché válido, calcular de nuevo
-    vector_bytes = calculate_user_vector(activity_docs, current_hour)
+    # No hay caché válido, calcular de nuevo (con búsquedas embebidas — es el feed real)
+    vector_bytes = calculate_user_vector(activity_docs, current_hour, include_search=True)
     if vector_bytes:
         persist_user_vector(user_id, vector_bytes, len(activity_docs))
-        
+
     return vector_bytes
