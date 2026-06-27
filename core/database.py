@@ -104,7 +104,6 @@ def init_db():
             )
         ''')
 
-        c.execute("DROP TABLE IF EXISTS promotions")
         c.execute('''
             CREATE TABLE IF NOT EXISTS promotions (
                 id TEXT PRIMARY KEY,
@@ -132,6 +131,30 @@ def init_db():
         ''')
         c.execute('CREATE INDEX IF NOT EXISTS idx_search_logs_query ON search_logs(query)')
         c.execute('CREATE INDEX IF NOT EXISTS idx_search_logs_clicked ON search_logs(clicked_id)')
+
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS user_activity_cache (
+                user_id TEXT NOT NULL,
+                product_id TEXT NOT NULL,
+                activity_type TEXT NOT NULL,
+                score REAL DEFAULT 1.0,
+                timestamp TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (user_id, product_id, activity_type)
+            )
+        ''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_uac_user ON user_activity_cache(user_id)')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_uac_product ON user_activity_cache(product_id)')
+
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS section_impressions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                section_id TEXT NOT NULL,
+                user_id TEXT,
+                clicked INTEGER DEFAULT 0,
+                timestamp TEXT DEFAULT (datetime('now'))
+            )
+        ''')
+        c.execute('CREATE INDEX IF NOT EXISTS idx_si_section ON section_impressions(section_id)')
 
         c.execute('''
             CREATE TABLE IF NOT EXISTS vector_queue (

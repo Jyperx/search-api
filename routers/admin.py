@@ -239,6 +239,66 @@ def get_admin_cerebro(page: int = 1, limit: int = 10):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/api/admin/metrics/engagement")
+def get_engagement_metrics():
+    """Dashboard metrics: search CTR, top queries, top categories, section performance."""
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
+        c.execute("SELECT COUNT(*) as total FROM search_logs")
+        total_searches = c.fetchone()["total"]
+
+        c.execute("SELECT COUNT(*) as total FROM search_logs WHERE clicked_id IS NOT NULL AND clicked_id != ''")
+        searches_with_clicks = c.fetchone()["total"]
+
+        ctr = round(searches_with_clicks / max(total_searches, 1) * 100, 1)
+
+        c.execute("""
+            SELECT query, COUNT(*) as count FROM search_logs
+            WHERE query != '' GROUP BY query ORDER BY count DESC LIMIT 15
+        """)
+        top_queries = [dict(r) for r in c.fetchall()]
+
+        c.execute("""
+            SELECT clicked_category as category, COUNT(*) as count FROM search_logs
+            WHERE clicked_category != '' GROUP BY clicked_category ORDER BY count DESC LIMIT 10
+        """)
+        top_categories = [dict(r) for r in c.fetchall()]
+
+        c.execute("""
+            SELECT section_id, COUNT(*) as impressions, SUM(clicked) as clicks
+            FROM section_impressions
+            GROUP BY section_id ORDER BY clicks DESC LIMIT 15
+        """)
+        section_perf = []
+        for r in c.fetchall():
+            r = dict(r)
+            r["ctr"] = round((r["clicks"] or 0) / max(r["impressions"], 1) * 100, 1)
+            section_perf.append(r)
+
+        c.execute("""
+            SELECT activity_type, COUNT(*) as count FROM user_activity_cache
+            GROUP BY activity_type ORDER BY count DESC
+        """)
+        activity_funnel = [dict(r) for r in c.fetchall()]
+
+        conn.close()
+        return {
+            "status": "ok",
+            "total_searches": total_searches,
+            "searches_with_clicks": searches_with_clicks,
+            "ctr_pct": ctr,
+            "top_queries": top_queries,
+            "top_categories": top_categories,
+            "section_performance": section_perf,
+            "activity_funnel": activity_funnel,
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
+
 @router.post("/api/admin/auto-generate-anchors")
 def auto_generate_anchors(background_tasks: BackgroundTasks):
     def run_generation():
@@ -440,6 +500,30 @@ def reset_vectors_db():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@router.get("/api/admin/clusters")
+def get_clusters():
+    return {"status": "ok", "clusters": MACRO_CLUSTERS_CACHE}
+
+@router.put("/api/admin/clusters")
+def update_clusters(body: dict):
+    """Update clusters in Firestore and hot-reload in memory."""
+    try:
+        new_clusters = body.get("clusters", {})
+        if not new_clusters:
+            return {"status": "error", "message": "No clusters provided"}
+        if db:
+            db.collection('config').document('algorithm').set({"clusters": new_clusters}, merge=True)
+        MACRO_CLUSTERS_CACHE.clear()
+        MACRO_CLUSTERS_CACHE.update(new_clusters)
+        return {"status": "ok", "count": len(new_clusters)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.get("/api/admin/concepts")
+def get_concepts():
+    from data.concepts import DICCIONARIO_CONCEPTOS_RAW, CATEGORY_WEIGHTS
+    return {"status": "ok", "concepts": DICCIONARIO_CONCEPTOS_RAW, "category_weights": CATEGORY_WEIGHTS}
+
 @router.post("/api/reset-clusters")
 def reset_clusters_to_defaults():
     """Empuja los defaults del cÔö£Ôöédigo a Firestore, reemplazando los clÔö£Ôòæsteres existentes.
@@ -477,7 +561,114 @@ class ProductPayload(BaseModel):
     views: Optional[int] = 0
 
 from core.config import global_sync_state
-from services.sync import do_sync_database, do_seed_anchors, do_sync_store
+from services.sync import do_sync_database, do_seed_anchors, do_sync_store, vector_worker_pool, async_index_product_vector
+
+class PromotionPayload(BaseModel):
+    id: Optional[str] = None
+    type: str = "simple"
+    targetUrl: str = ""
+    imageUrl: str = ""
+    storeId: str = ""
+    emoji: str = ""
+    title: str = ""
+    subtitle: str = ""
+    bg: str = "#1A1A1A"
+    titleColor: str = "#FFFFFF"
+    subtitleColor: str = "#AAAAAA"
+
+@router.get("/api/admin/promotions")
+def list_promotions():
+    try:
+        conn = get_db_connection()
+        rows = conn.execute("SELECT * FROM promotions").fetchall()
+        conn.close()
+        return {"status": "ok", "promotions": [dict(r) for r in rows]}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.post("/api/admin/promotions")
+def create_promotion(req: PromotionPayload):
+    try:
+        import uuid
+        promo_id = req.id or ("promo_" + str(uuid.uuid4())[:8])
+        with sqlite_lock:
+            conn = get_db_connection()
+            conn.execute(
+                "INSERT INTO promotions (id, type, targetUrl, imageUrl, storeId, emoji, title, subtitle, bg, titleColor, subtitleColor) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (promo_id, req.type, req.targetUrl, req.imageUrl, req.storeId, req.emoji, req.title, req.subtitle, req.bg, req.titleColor, req.subtitleColor)
+            )
+            conn.commit()
+            conn.close()
+        return {"status": "ok", "id": promo_id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.put("/api/admin/promotions/{promo_id}")
+def update_promotion(promo_id: str, req: PromotionPayload):
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            conn.execute(
+                "UPDATE promotions SET type=?, targetUrl=?, imageUrl=?, storeId=?, emoji=?, title=?, subtitle=?, bg=?, titleColor=?, subtitleColor=? WHERE id=?",
+                (req.type, req.targetUrl, req.imageUrl, req.storeId, req.emoji, req.title, req.subtitle, req.bg, req.titleColor, req.subtitleColor, promo_id)
+            )
+            conn.commit()
+            conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.delete("/api/admin/promotions/{promo_id}")
+def delete_promotion(promo_id: str):
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            conn.execute("DELETE FROM promotions WHERE id = ?", (promo_id,))
+            conn.commit()
+            conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.post("/api/webhook/product")
+def webhook_product_upsert(payload: ProductPayload):
+    """Real-time product indexing: upsert in FTS5 + queue vector generation."""
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            c = conn.cursor()
+            c.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (payload.id,))
+            c.execute(
+                "INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen) "
+                "VALUES (?, 'product', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?)",
+                (payload.id, payload.storeId, payload.name, payload.category, payload.description,
+                 payload.price, payload.icon, payload.imageUrl,
+                 1 if payload.onSale else 0, payload.salePrice or 0,
+                 payload.likes, payload.views, payload.isOpen)
+            )
+            conn.commit()
+            conn.close()
+        vector_worker_pool.submit(
+            async_index_product_vector, payload.id, payload.name, payload.category or '', payload.description or ''
+        )
+        return {"status": "ok", "product_id": payload.id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.post("/api/webhook/product-delete/{product_id}")
+def webhook_product_delete(product_id: str):
+    """Remove a product from FTS5 index and vectors."""
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            conn.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (product_id,))
+            conn.execute("DELETE FROM product_vectors WHERE product_id = ?", (product_id,))
+            conn.execute("DELETE FROM vector_queue WHERE product_id = ?", (product_id,))
+            conn.commit()
+            conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @router.get("/api/admin/sync-status")
 def get_sync_status():

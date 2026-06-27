@@ -11,7 +11,7 @@ from typing import List, Optional
 
 from core.database import get_db_connection
 from data.clusters import MACRO_CLUSTERS_CACHE, TIME_RULES_CACHE
-from services.recommender import get_or_calculate_user_vector
+from services.recommender import get_or_calculate_user_vector, find_similar_users_products
 from services.weather import WEATHER_CACHE_STORE
 
 logger = logging.getLogger(__name__)
@@ -203,7 +203,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 for row in candidate_items:
                     rid = row["id"]
                     sid = row["storeId"]
-                    if store_counts.get(sid, 0) >= 4: continue
+                    if store_counts.get(sid, 0) >= 2: continue
                     
                     filtered_items.append(row)
                     global_seen_ids.add(rid)
@@ -220,18 +220,46 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                             if titles_list:
                                 anchor_title = random.choice(titles_list)
                         except: pass
-                        
+
+                    is_first_personalized = len(feed_sections) == 0 and user_vector is not None
                     feed_sections.append({
                         "id": f"dyn_vector_{anchor['anchor_id']}",
                         "type": "products",
                         "title": anchor_title,
                         "subtitle": anchor["subtitle"],
                         "items": filtered_items,
-                        "isExploratory": anchor.get("isExploratory", False)
+                        "isExploratory": anchor.get("isExploratory", False),
+                        "isPersonalized": is_first_personalized,
+                        "layout": "featured" if is_first_personalized else ("grid" if len(filtered_items) >= 4 else "scroll")
                     })
             except Exception as e:
                 logger.error(f"[Cruce 2] Error obteniendo productos para ancla {anchor['anchor_id']}: {e}")
                 
+        # 3.5 Collaborative Filtering: "Otros como tú pidieron"
+        if user_vector:
+            try:
+                collab_items = find_similar_users_products(uid, user_vector)
+                collab_filtered = [item for item in collab_items if item.get('id') not in global_seen_ids]
+                if len(collab_filtered) >= 2:
+                    for item in collab_filtered:
+                        global_seen_ids.add(item['id'])
+                    collab_titles = [
+                        "Otros como tú pidieron",
+                        "Popular entre usuarios similares",
+                        "Te podría gustar",
+                        "Tendencia entre perfiles similares"
+                    ]
+                    feed_sections.append({
+                        "id": "dyn_collab_filtering",
+                        "type": "products",
+                        "title": random.choice(collab_titles),
+                        "subtitle": "Basado en usuarios con gustos similares",
+                        "items": collab_filtered,
+                        "layout": "scroll"
+                    })
+            except Exception as e:
+                logger.error(f"[Collaborative Filtering] Error: {e}")
+
         # 4. Fallback Léxico (FTS5) - MACRO_CLUSTERS_CACHE
         cluster_scores = {k: 0.0 for k in MACRO_CLUSTERS_CACHE.keys()}
         
@@ -347,7 +375,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                             "type": "products",
                             "title": env_title,
                             "subtitle": env_subtitle,
-                            "items": filtered_env
+                            "items": filtered_env,
+                            "layout": "scroll"
                         })
             except Exception as e:
                 logger.error(f"[Weather/Env Vector] Error: {e}")
@@ -395,7 +424,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                             "type": "products",
                             "title": f"¿Has probado {exp_cat}?",
                             "subtitle": "Descubre algo totalmente nuevo",
-                            "items": filtered_exp
+                            "items": filtered_exp,
+                            "layout": "grid" if len(filtered_exp) >= 4 else "scroll"
                         })
         except Exception as e:
             logger.error(f"[Anti-Bubble] Error: {e}")
@@ -451,7 +481,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 for row in candidate_items:
                     rid = row["id"]
                     sid = row["storeId"]
-                    if store_counts.get(sid, 0) >= 4: continue
+                    if store_counts.get(sid, 0) >= 2: continue
                     filtered_items.append(row)
                     global_seen_ids.add(rid)
                     store_counts[sid] = store_counts.get(sid, 0) + 1
@@ -463,7 +493,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                         "type": "products",
                         "title": title,
                         "subtitle": subtitle,
-                        "items": filtered_items
+                        "items": filtered_items,
+                        "layout": "grid" if len(filtered_items) >= 4 else "scroll"
                     })
             except Exception as e:
                 logger.error(f"[FTS Fallback] Error en cluster {cluster}: {e}")
@@ -549,5 +580,23 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         return {"sections": []}
     finally:
         conn.close()
-        
+
+    # Post-processing: enforce category diversity across consecutive sections
+    if len(feed_sections) >= 3:
+        def dominant_cat(section):
+            items = section.get("items", [])
+            cats = [str(i.get("category", "")).lower() for i in items if i.get("category")]
+            if not cats: return ""
+            return max(set(cats), key=cats.count)
+
+        i = 2
+        while i < len(feed_sections):
+            if all(s.get("type") == "products" for s in feed_sections[i-2:i+1]):
+                cats = [dominant_cat(s) for s in feed_sections[i-2:i+1]]
+                if cats[0] and cats[0] == cats[1] == cats[2]:
+                    exploratory = [s for s in feed_sections if s.get("isExploratory")]
+                    if not exploratory:
+                        random.shuffle(feed_sections[i-1:i+1])
+            i += 1
+
     return {"sections": feed_sections}

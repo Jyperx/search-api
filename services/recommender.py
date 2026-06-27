@@ -133,6 +133,69 @@ def persist_user_vector(user_id: str, vector_bytes: bytes, event_count: int):
     except Exception as e:
         logger.error(f"Error persisting user vector for {user_id}: {e}")
 
+def find_similar_users_products(user_id: str, user_vector: bytes, top_k: int = 5, max_products: int = 8) -> list[dict]:
+    """Collaborative filtering: find products liked by similar users that this user hasn't seen."""
+    if not user_vector:
+        return []
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute("""
+            SELECT user_id, vec_distance_cosine(embedding, ?) AS distance
+            FROM user_vectors
+            WHERE user_id != ?
+            ORDER BY distance ASC
+            LIMIT ?
+        """, (user_vector, user_id, top_k))
+        similar_users = [row['user_id'] for row in c.fetchall() if row['distance'] < 0.6]
+
+        if not similar_users:
+            conn.close()
+            return []
+
+        my_products = set()
+        rows = c.execute("SELECT product_id FROM user_activity_cache WHERE user_id = ?", (user_id,)).fetchall()
+        for r in rows:
+            my_products.add(r['product_id'])
+
+        placeholders = ','.join(['?'] * len(similar_users))
+        c.execute(f"""
+            SELECT uac.product_id, SUM(uac.score) as total_score,
+                   s.id, s.name, s.category, s.description, s.price, s.icon, s.imageUrl,
+                   s.onSale, s.salePrice, s.likes, s.views, s.purchases, s.storeId,
+                   st.name as storeName
+            FROM user_activity_cache uac
+            JOIN search_index s ON s.id = uac.product_id AND s.type = 'product'
+            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') st ON st.id = s.storeId
+            WHERE uac.user_id IN ({placeholders})
+            AND uac.score > 0
+            AND CAST(s.available AS INTEGER) = 1
+            GROUP BY uac.product_id
+            ORDER BY total_score DESC
+            LIMIT ?
+        """, (*similar_users, max_products * 3))
+
+        candidates = []
+        store_counts = {}
+        for row in c.fetchall():
+            row = dict(row)
+            pid = row['product_id']
+            sid = row.get('storeId', '')
+            if pid in my_products:
+                continue
+            if store_counts.get(sid, 0) >= 2:
+                continue
+            candidates.append(row)
+            store_counts[sid] = store_counts.get(sid, 0) + 1
+            if len(candidates) >= max_products:
+                break
+
+        conn.close()
+        return candidates
+    except Exception as e:
+        logger.error(f"Collaborative filtering error for {user_id}: {e}")
+        return []
+
 def get_or_calculate_user_vector(user_id: str, activity_docs: list, current_hour: int) -> bytes | None:
     conn = get_db_connection()
     try:

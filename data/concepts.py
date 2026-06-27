@@ -28,6 +28,8 @@ CATEGORY_WEIGHTS = {
     "default": 0.10,      
 }
 
+DICCIONARIO_CONCEPTOS_RAW = {}
+
 CONCEPTOS_SEMILLA = {
     "ENV_CALOR": (
         "Día soleado, mucho calor, sol picante, sed, bochorno, caluroso. "
@@ -70,6 +72,7 @@ CONCEPTOS_SEMILLA = {
 }
 
 def cargar_conceptos_en_memoria():
+    DICCIONARIO_CONCEPTOS_RAW.update(CONCEPTOS_SEMILLA)
     conn = get_db_connection()
     try:
         rows = conn.execute("SELECT id, embedding FROM concept_vectors").fetchall()
