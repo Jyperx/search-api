@@ -146,15 +146,13 @@ def init_db():
         c.execute('CREATE INDEX IF NOT EXISTS idx_uac_product ON user_activity_cache(product_id)')
 
         c.execute('''
-            CREATE TABLE IF NOT EXISTS section_impressions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                section_id TEXT NOT NULL,
-                user_id TEXT,
-                clicked INTEGER DEFAULT 0,
-                timestamp TEXT DEFAULT (datetime('now'))
+            CREATE TABLE IF NOT EXISTS section_stats (
+                section_id TEXT PRIMARY KEY,
+                impressions INTEGER DEFAULT 0,
+                clicks INTEGER DEFAULT 0,
+                updated_at TEXT DEFAULT (datetime('now'))
             )
         ''')
-        c.execute('CREATE INDEX IF NOT EXISTS idx_si_section ON section_impressions(section_id)')
 
         c.execute('''
             CREATE TABLE IF NOT EXISTS vector_queue (

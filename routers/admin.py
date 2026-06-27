@@ -45,29 +45,41 @@ def get_admin_users_vectors(page: int = 1, limit: int = 10):
             
             current_hour = (datetime.now(timezone.utc).hour - 5) % 24
             
+            CONCEPT_LABELS = {
+                "ENV_CALOR": "☀️ Calor", "ENV_FRIO": "🌧️ Frío", "ENV_NOCHE": "🌙 Noche",
+                "ENV_MANANA": "🌅 Mañana", "ENV_MEDIODIA": "🍽️ Mediodía", "ENV_SALUDABLE": "🥗 Saludable",
+                "ENV_GUAYABO": "🤕 Guayabo", "ENV_PEREZA": "🛋️ Pereza",
+            }
+
             for u in users:
                 uid = u.id
                 udata = u.to_dict()
                 recent_activity = udata.get('recent_activity', [])
-                
+
                 user_vector = calculate_user_vector(recent_activity, current_hour=current_hour)
-                anchors = []
+                has_vector = user_vector is not None
+                nearest_concept = None
                 if user_vector:
-                    c.execute("""
-                        SELECT a.anchor_id, m.title, m.subtitle, vec_distance_cosine(a.embedding, ?) AS distance
-                        FROM anchor_vectors a
-                        JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
-                        ORDER BY distance ASC
-                        LIMIT 2
-                    """, (user_vector,))
-                    anchors = [dict(row) for row in c.fetchall()]
-                
-                if len(recent_activity) > 0 or len(anchors) > 0:
+                    c.execute(
+                        "SELECT id, vec_distance_cosine(embedding, ?) AS distance "
+                        "FROM concept_vectors ORDER BY distance ASC LIMIT 1",
+                        (user_vector,)
+                    )
+                    row = c.fetchone()
+                    if row:
+                        nearest_concept = {
+                            "id": row["id"],
+                            "label": CONCEPT_LABELS.get(row["id"], row["id"]),
+                            "distance": row["distance"],
+                        }
+
+                if len(recent_activity) > 0:
                     results.append({
                         "uid": u.id,
                         "name": udata.get('name', udata.get('email', 'Usuario Anónimo')),
                         "activity_count": len(recent_activity),
-                        "anchors": anchors
+                        "has_vector": has_vector,
+                        "nearest_concept": nearest_concept,
                     })
                     
             return {"status": "ok", "users": results}
@@ -266,14 +278,14 @@ def get_engagement_metrics():
         top_categories = [dict(r) for r in c.fetchall()]
 
         c.execute("""
-            SELECT section_id, COUNT(*) as impressions, SUM(clicked) as clicks
-            FROM section_impressions
-            GROUP BY section_id ORDER BY clicks DESC LIMIT 15
+            SELECT section_id, impressions, clicks
+            FROM section_stats
+            ORDER BY clicks DESC LIMIT 15
         """)
         section_perf = []
         for r in c.fetchall():
             r = dict(r)
-            r["ctr"] = round((r["clicks"] or 0) / max(r["impressions"], 1) * 100, 1)
+            r["ctr"] = round((r["clicks"] or 0) / max(r["impressions"] or 0, 1) * 100, 1)
             section_perf.append(r)
 
         c.execute("""

@@ -114,6 +114,24 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             except Exception as e:
                 logger.warning(f"[Sim Prompt] No se pudo embeber el prompt: {e}")
 
+        # 1.2 Alimentar user_activity_cache desde la actividad reciente (fuente del collaborative filtering)
+        if req.activities and not req.sim_prompt:
+            score_map = {'purchase': 5.0, 'cart': 3.0, 'search': 2.0, 'click': 1.0,
+                         'view': 1.0, 'view_product': 1.0, 'ignored': -0.5}
+            try:
+                for act in req.activities:
+                    pid = act.get('productId')
+                    if pid:
+                        atype = act.get('type', 'view')
+                        c.execute(
+                            "INSERT OR REPLACE INTO user_activity_cache (user_id, product_id, activity_type, score, timestamp) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (uid, pid, atype, score_map.get(atype, 1.0), act.get('timestamp') or '')
+                        )
+                conn.commit()
+            except Exception as e:
+                logger.warning(f"[Activity Cache] Error: {e}")
+
         # 2. Clima + pesos continuos + vector de contexto
         temp, code = get_weather(req.lat, req.lng, req.override_weather_temp, req.override_weather_code)
         weights = compute_context_weights(temp, code, current_hour)
@@ -385,6 +403,19 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 })
         except Exception as e:
             logger.error(f"[Stores Vector] Error: {e}")
+
+        # 5. Registrar impresiones por sección (denominador del CTR)
+        if not req.sim_prompt:
+            try:
+                for sec in feed_sections:
+                    c.execute(
+                        "INSERT INTO section_stats (section_id, impressions, clicks) VALUES (?, 1, 0) "
+                        "ON CONFLICT(section_id) DO UPDATE SET impressions = impressions + 1, updated_at = datetime('now')",
+                        (sec["id"],)
+                    )
+                conn.commit()
+            except Exception as e:
+                logger.warning(f"[Section Impressions] Error: {e}")
 
     except Exception as e:
         logger.error(f"[Home Feed] Unhandled error: {e}")

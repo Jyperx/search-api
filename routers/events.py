@@ -43,8 +43,9 @@ def track_user_events(uid: str, req: UserEventsRequest):
                     )
                 if act.sectionId:
                     conn.execute(
-                        "INSERT INTO section_impressions (section_id, user_id, clicked) VALUES (?, ?, 1)",
-                        (act.sectionId, uid)
+                        "INSERT INTO section_stats (section_id, impressions, clicks) VALUES (?, 0, 1) "
+                        "ON CONFLICT(section_id) DO UPDATE SET clicks = clicks + 1, updated_at = datetime('now')",
+                        (act.sectionId,)
                     )
             conn.execute("DELETE FROM user_vectors WHERE user_id = ?", (uid,))
             conn.execute("DELETE FROM user_vector_meta WHERE user_id = ?", (uid,))
