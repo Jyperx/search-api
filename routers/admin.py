@@ -195,6 +195,17 @@ def get_admin_cerebro(page: int = 1, limit: int = 10, store_page: int = 1, ancho
 
         c.execute("SELECT COUNT(*) as c FROM store_vectors")
         total_store_vectors = c.fetchone()["c"]
+
+        # Diagnóstico de vectorización: indexados vs vectorizados vs en cola de reintentos
+        c.execute("SELECT COUNT(*) as c FROM search_index WHERE type='product'")
+        total_products_indexed = c.fetchone()["c"]
+        c.execute("SELECT COUNT(*) as c FROM search_index WHERE type='store'")
+        total_stores_indexed = c.fetchone()["c"]
+        try:
+            c.execute("SELECT COUNT(*) as c FROM vector_queue")
+            vector_queue_count = c.fetchone()["c"]
+        except Exception:
+            vector_queue_count = 0
         
         c.execute("""
             SELECT a.anchor_id, m.title, m.subtitle, m.section_type, a.embedding, m.is_manual
@@ -249,6 +260,9 @@ def get_admin_cerebro(page: int = 1, limit: int = 10, store_page: int = 1, ancho
             "vector_metrics": {
                 "total_product_vectors": total_product_vectors,
                 "total_store_vectors": total_store_vectors,
+                "total_products_indexed": total_products_indexed,
+                "total_stores_indexed": total_stores_indexed,
+                "vector_queue_count": vector_queue_count,
                 "anchors_count": len(anchors),
                 "anchors": anchors,
                 "sample_products": sample_products,
@@ -636,11 +650,11 @@ class ProductPayload(BaseModel):
     views: Optional[int] = 0
 
 from core.config import global_sync_state
-from services.sync import do_sync_database, do_seed_anchors, do_sync_store, vector_worker_pool, async_index_product_vector
+from services.sync import do_sync_database, do_seed_anchors, do_sync_store, vector_worker_pool, async_index_product_vector, index_store_vector
 
-@router.post("/api/webhook/product")
+@router.post("/api/index/product")
 def webhook_product_upsert(payload: ProductPayload):
-    """Real-time product indexing: upsert in FTS5 + queue vector generation."""
+    """Indexado en tiempo real (lo llama la app de comercio al guardar): upsert FTS5 + vector."""
     try:
         with sqlite_lock:
             conn = get_db_connection()
@@ -663,9 +677,9 @@ def webhook_product_upsert(payload: ProductPayload):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-@router.post("/api/webhook/product-delete/{product_id}")
+@router.delete("/api/index/product/{product_id}")
 def webhook_product_delete(product_id: str):
-    """Remove a product from FTS5 index and vectors."""
+    """Quita un producto del índice y sus vectores (lo llama la app al agotar/eliminar)."""
     try:
         with sqlite_lock:
             conn = get_db_connection()
@@ -675,6 +689,54 @@ def webhook_product_delete(product_id: str):
             conn.commit()
             conn.close()
         return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+class StorePayload(BaseModel):
+    id: str
+    name: str
+    category: Optional[str] = ""
+    description: Optional[str] = ""
+    imageUrl: Optional[str] = ""
+    isOpen: Optional[bool] = True
+
+
+@router.post("/api/index/store")
+def index_store(payload: StorePayload):
+    """Indexado en tiempo real del comercio (lo llama la app al guardar el perfil): upsert FTS5 + vector."""
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            conn.execute("DELETE FROM search_index WHERE id = ? AND type = 'store'", (payload.id,))
+            conn.execute(
+                "INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen) "
+                "VALUES (?, 'store', ?, ?, ?, ?, '0', '', ?, 0, '', 0, 0, 0, 1, ?)",
+                (payload.id, payload.id, payload.name, payload.category or '', payload.description or '',
+                 payload.imageUrl or '', 1 if payload.isOpen else 0)
+            )
+            conn.commit()
+            conn.close()
+        vector_worker_pool.submit(
+            index_store_vector, payload.id, payload.name, payload.category or '', payload.description or ''
+        )
+        return {"status": "ok", "store_id": payload.id}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.patch("/api/index/store/{store_id}/status")
+def index_store_status(store_id: str, isOpen: bool = True):
+    """Actualiza solo el estado abierto/cerrado del comercio en el índice (ultra-rápido)."""
+    try:
+        val = 1 if isOpen else 0
+        with sqlite_lock:
+            conn = get_db_connection()
+            conn.execute("UPDATE search_index SET isOpen=? WHERE id=? AND type='store'", (val, store_id))
+            conn.execute("UPDATE search_index SET isOpen=? WHERE storeId=? AND type='product'", (val, store_id))
+            conn.commit()
+            conn.close()
+        return {"status": "ok", "isOpen": isOpen}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 

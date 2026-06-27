@@ -336,6 +336,36 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         except Exception as e:
             logger.error(f"[Anti-Bubble] Error: {e}")
 
+        # 4e.bis RED DE SEGURIDAD: garantizar que el catálogo se muestre aunque falten vectores.
+        # El pool vectorial solo incluye productos ya vectorizados; si la vectorización
+        # va atrasada o falló, el feed quedaría vacío. Esto trae productos directo del índice.
+        total_product_items = sum(len(s.get("items", [])) for s in feed_sections if s.get("type") == "products")
+        if total_product_items < 4:
+            try:
+                c.execute("""
+                    SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                           p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                           s.name as storeName
+                    FROM search_index p
+                    LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    WHERE p.type = 'product' AND CAST(p.available AS INTEGER) = 1 AND CAST(s.isOpen AS INTEGER) = 1
+                    ORDER BY CAST(p.purchases AS INTEGER) DESC, CAST(p.likes AS INTEGER) DESC, RANDOM()
+                    LIMIT 40
+                """)
+                catalog = [dict(r) for r in c.fetchall()]
+                fallback_items = take_from_pool(catalog, 8, store_cap=3)
+                if fallback_items:
+                    feed_sections.append({
+                        "id": "dyn_catalog",
+                        "type": "products",
+                        "title": "Explora el catálogo",
+                        "subtitle": "Descubre lo que hay cerca de ti",
+                        "items": fallback_items,
+                        "layout": "grid" if len(fallback_items) >= 4 else "scroll",
+                    })
+            except Exception as e:
+                logger.error(f"[Catalog Fallback] Error: {e}")
+
         # 4f. Tiendas recomendadas
         try:
             if user_vector:
