@@ -110,8 +110,10 @@ async def _async_build_concept_dictionary():
             if norm > 0:
                 embedding = embedding / norm
 
+            # Las tablas vec0 no respetan INSERT OR REPLACE → borrar e insertar
+            conn.execute("DELETE FROM concept_vectors WHERE id = ?", (concept_id,))
             conn.execute(
-                "INSERT OR REPLACE INTO concept_vectors (id, embedding) VALUES (?, ?)",
+                "INSERT INTO concept_vectors (id, embedding) VALUES (?, ?)",
                 (concept_id, embedding.tobytes())
             )
             print(f"Embedding generado correctamente para {concept_id}")

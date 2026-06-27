@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 from typing import List, Optional
 
-from core.database import get_db_connection
+from core.database import get_db_connection, sqlite_lock
 from data.clusters import MACRO_CLUSTERS_CACHE, TIME_RULES_CACHE
 from services.recommender import get_or_calculate_user_vector, find_similar_users_products
 from services.context_engine import (
@@ -119,16 +119,17 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             score_map = {'purchase': 5.0, 'cart': 3.0, 'search': 2.0, 'click': 1.0,
                          'view': 1.0, 'view_product': 1.0, 'ignored': -0.5}
             try:
-                for act in req.activities:
-                    pid = act.get('productId')
-                    if pid:
-                        atype = act.get('type', 'view')
-                        c.execute(
-                            "INSERT OR REPLACE INTO user_activity_cache (user_id, product_id, activity_type, score, timestamp) "
-                            "VALUES (?, ?, ?, ?, ?)",
-                            (uid, pid, atype, score_map.get(atype, 1.0), act.get('timestamp') or '')
-                        )
-                conn.commit()
+                with sqlite_lock:
+                    for act in req.activities:
+                        pid = act.get('productId')
+                        if pid:
+                            atype = act.get('type', 'view')
+                            c.execute(
+                                "INSERT OR REPLACE INTO user_activity_cache (user_id, product_id, activity_type, score, timestamp) "
+                                "VALUES (?, ?, ?, ?, ?)",
+                                (uid, pid, atype, score_map.get(atype, 1.0), act.get('timestamp') or '')
+                            )
+                    conn.commit()
             except Exception as e:
                 logger.warning(f"[Activity Cache] Error: {e}")
 
@@ -407,13 +408,14 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         # 5. Registrar impresiones por sección (denominador del CTR)
         if not req.sim_prompt:
             try:
-                for sec in feed_sections:
-                    c.execute(
-                        "INSERT INTO section_stats (section_id, impressions, clicks) VALUES (?, 1, 0) "
-                        "ON CONFLICT(section_id) DO UPDATE SET impressions = impressions + 1, updated_at = datetime('now')",
-                        (sec["id"],)
-                    )
-                conn.commit()
+                with sqlite_lock:
+                    for sec in feed_sections:
+                        c.execute(
+                            "INSERT INTO section_stats (section_id, impressions, clicks) VALUES (?, 1, 0) "
+                            "ON CONFLICT(section_id) DO UPDATE SET impressions = impressions + 1, updated_at = datetime('now')",
+                            (sec["id"],)
+                        )
+                    conn.commit()
             except Exception as e:
                 logger.warning(f"[Section Impressions] Error: {e}")
 

@@ -123,7 +123,9 @@ def persist_user_vector(user_id: str, vector_bytes: bytes, event_count: int):
     try:
         with sqlite_lock:
             conn = get_db_connection()
-            conn.execute("INSERT OR REPLACE INTO user_vectors (user_id, embedding) VALUES (?, ?)", (user_id, vector_bytes))
+            # Las tablas vec0 no respetan INSERT OR REPLACE → borrar e insertar
+            conn.execute("DELETE FROM user_vectors WHERE user_id = ?", (user_id,))
+            conn.execute("INSERT INTO user_vectors (user_id, embedding) VALUES (?, ?)", (user_id, vector_bytes))
             conn.execute(
                 "INSERT OR REPLACE INTO user_vector_meta (user_id, last_updated, event_count, source) VALUES (?, datetime('now'), ?, ?)",
                 (user_id, event_count, 'calculated')

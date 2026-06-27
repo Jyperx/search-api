@@ -23,8 +23,10 @@ def async_index_product_vector(product_id: str, name: str, category: str, descri
         with sqlite_lock:
             conn = get_db_connection()
             if vector_bytes:
+                # Las tablas vec0 no respetan INSERT OR REPLACE → borrar e insertar
+                conn.execute("DELETE FROM product_vectors WHERE product_id = ?", (product_id,))
                 conn.execute(
-                    "INSERT OR REPLACE INTO product_vectors (product_id, embedding) VALUES (?, ?)",
+                    "INSERT INTO product_vectors (product_id, embedding) VALUES (?, ?)",
                     (product_id, vector_bytes)
                 )
                 # Borrar de la cola si tuvo éxito
