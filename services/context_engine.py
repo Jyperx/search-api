@@ -88,16 +88,20 @@ def compute_context_weights(temp, code, hour: int, tmax=None, tmin=None) -> dict
     weights = {}
 
     if temp is not None:
-        abs_hot = _clamp((temp - 20) / 12)      # absoluto: 0 a 20°, 1 a 32°+
-        abs_cold = _clamp((18 - temp) / 12)     # absoluto: 0 a 18°, 1 a 6°
+        # Absoluto = "¿hace calor/frío de verdad?". Es la base que NO se puede inventar.
+        abs_hot = _clamp((temp - 22) / 10)      # 0 a 22°, 1 a 32°+
+        abs_cold = _clamp((20 - temp) / 12)     # 0 a 20°, 1 a 8°
         if tmax is not None and tmin is not None and (tmax - tmin) >= 3:
-            rel = _clamp((temp - tmin) / (tmax - tmin))  # posición en el rango del día local
-            hot = 0.6 * rel + 0.4 * abs_hot
-            cold = 0.6 * (1 - rel) + 0.4 * abs_cold
+            # Lo relativo a la ciudad solo MODULA lo absoluto (no crea calor en un día frío).
+            rel = _clamp((temp - tmin) / (tmax - tmin))
+            hot = abs_hot * (0.7 + 0.3 * rel)
+            cold = abs_cold * (0.7 + 0.3 * (1 - rel))
         else:
             hot, cold = abs_hot, abs_cold
-        if code is not None and code >= 50:      # lluvia/niebla → sube frío
-            cold = max(cold, 0.5)
+        # Lluvia/niebla/tormenta: la gente quiere algo calientito, NO refrescarse.
+        if code is not None and code >= 51:
+            cold = max(cold, 0.6)
+            hot *= 0.25
         weights["ENV_CALOR"] = hot
         weights["ENV_FRIO"] = cold
 
