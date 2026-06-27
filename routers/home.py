@@ -14,7 +14,7 @@ from data.clusters import MACRO_CLUSTERS_CACHE, TIME_RULES_CACHE
 from services.recommender import get_or_calculate_user_vector, find_similar_users_products
 from services.context_engine import (
     get_weather, compute_context_weights, build_context_vector,
-    score_product, concept_distance,
+    score_product, concept_distance, haversine_km, proximity_boost,
 )
 
 logger = logging.getLogger(__name__)
@@ -134,11 +134,31 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 logger.warning(f"[Activity Cache] Error: {e}")
 
         # 2. Clima + pesos continuos + vector de contexto
-        temp, code = get_weather(req.lat, req.lng, req.override_weather_temp, req.override_weather_code)
-        weights = compute_context_weights(temp, code, current_hour)
+        temp, code, tmax, tmin = get_weather(req.lat, req.lng, req.override_weather_temp, req.override_weather_code)
+        weights = compute_context_weights(temp, code, current_hour, tmax, tmin)
         ctx = build_context_vector(user_vec_np, weights)
 
         global_seen_ids = set()
+
+        # Ubicaciones de comercios para el ranking por cercanía
+        store_loc = {}
+        if req.lat is not None and req.lng is not None:
+            try:
+                for lr in c.execute("SELECT store_id, lat, lng FROM store_locations").fetchall():
+                    store_loc[lr["store_id"]] = (lr["lat"], lr["lng"])
+            except Exception as e:
+                logger.warning(f"[Geo] No se pudieron cargar ubicaciones: {e}")
+
+        def add_proximity(row):
+            """Suma un boost por cercanía al final_score (si hay ubicación)."""
+            if not store_loc or req.lat is None:
+                return
+            loc = store_loc.get(row.get("storeId"))
+            if loc:
+                dist = haversine_km(req.lat, req.lng, loc[0], loc[1])
+                row["distance_km"] = round(dist, 1)
+                row["_prox"] = proximity_boost(dist)
+                row["final_score"] = row.get("final_score", 0) + row["_prox"]
 
         def take_from_pool(candidates, n, store_cap=2):
             out = []
@@ -176,6 +196,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             for raw in c.fetchall():
                 row = dict(raw)
                 row["final_score"] = score_product(row, row["distance"])
+                add_proximity(row)
                 pool.append(row)
         else:
             # Sin señal (usuario nuevo, sin clima/hora marcada) → popularidad
@@ -193,6 +214,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 row = dict(raw)
                 row["distance"] = 1.0
                 row["final_score"] = score_product(row, 1.0)
+                add_proximity(row)
                 pool.append(row)
 
         pool.sort(key=lambda x: x["final_score"], reverse=True)
@@ -202,7 +224,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         # popularidad — así no se cuelan productos populares pero irrelevantes (p.ej. papel higiénico).
         personalized = user_vector is not None
         if personalized:
-            featured_candidates = sorted(pool, key=lambda x: x.get("distance", 1.0))
+            # Afinidad (cercanía semántica al gusto) y, para empates, cercanía física
+            featured_candidates = sorted(pool, key=lambda x: x.get("distance", 1.0) - x.get("_prox", 0.0))
         else:
             featured_candidates = pool  # usuario nuevo → ya está ordenado por popularidad/contexto
         featured = take_from_pool(featured_candidates, 6)
@@ -403,6 +426,11 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 affinity = max(0.0, 1.0 - distance)
                 novelty = 0.2 if likes_val < 5 else 0.0
                 row["final_score"] = affinity + (math.log1p(likes_val) / 20.0) + novelty + random.uniform(0.0, 0.15)
+                loc = store_loc.get(row["store_id"])
+                if loc:
+                    d = haversine_km(req.lat, req.lng, loc[0], loc[1])
+                    row["distance_km"] = round(d, 1)
+                    row["final_score"] += proximity_boost(d)
                 candidate_stores.append(row)
 
             candidate_stores.sort(key=lambda x: x["final_score"], reverse=True)
@@ -426,6 +454,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                         "deliveryFee": 0,
                         "open": True,
                         "type": "store",
+                        "distance_km": row.get("distance_km"),
                     })
                     category_counts[cat] = category_counts.get(cat, 0) + 1
 
@@ -440,6 +469,27 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 })
         except Exception as e:
             logger.error(f"[Stores Vector] Error: {e}")
+
+        # 4.z Ciclo de aprendizaje por CTR: reordenar secciones por su tasa de clic histórica.
+        # "Para ti" queda fija arriba y las tiendas segundas; el resto sube/baja según cuánto se toca.
+        try:
+            stats = {}
+            for sr in c.execute("SELECT section_id, impressions, clicks FROM section_stats").fetchall():
+                stats[sr["section_id"]] = (sr["impressions"], sr["clicks"])
+
+            def ctr_score(sid):
+                imp, clk = stats.get(sid, (0, 0))
+                if imp < 5:
+                    return 0.5  # poca data → prior neutro alto para darle oportunidad
+                return (clk + 1) / (imp + 5)
+
+            featured_secs = [s for s in feed_sections if s.get("id") == "dyn_for_you"]
+            store_secs = [s for s in feed_sections if s.get("type") == "stores"]
+            rest_secs = [s for s in feed_sections if s not in featured_secs and s not in store_secs]
+            rest_secs.sort(key=lambda s: ctr_score(s.get("id", "")), reverse=True)
+            feed_sections = featured_secs + store_secs + rest_secs
+        except Exception as e:
+            logger.warning(f"[CTR Reorder] Error: {e}")
 
         # 5. Registrar impresiones por sección (denominador del CTR)
         if not req.sim_prompt:

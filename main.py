@@ -45,6 +45,7 @@ async def lifespan(app: FastAPI):
         from apscheduler.schedulers.background import BackgroundScheduler
         from services.sync import retry_vector_queue_task
         from data.synonyms import learn_synonyms_from_clicks
+        from data.clusters import learn_clusters_from_catalog
 
         def _auto_learn_synonyms():
             try:
@@ -54,14 +55,24 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 print(f"[Scheduler] Error aprendiendo sinónimos: {e}")
 
+        def _auto_learn_clusters():
+            try:
+                learned = learn_clusters_from_catalog(core.firebase.db)
+                if learned:
+                    print(f"[Scheduler] Auto-aprendidos/actualizados {len(learned)} clusters por TF-IDF.")
+            except Exception as e:
+                print(f"[Scheduler] Error aprendiendo clusters: {e}")
+
         scheduler = BackgroundScheduler(timezone="UTC")
         # Reintentar embeddings fallidos cada 10 min (rescata productos sin vectorizar)
         scheduler.add_job(retry_vector_queue_task, 'interval', minutes=10, id='retry_vectors', replace_existing=True)
         # Aprender sinónimos por co-clics cada 6 horas
         scheduler.add_job(_auto_learn_synonyms, 'interval', hours=6, id='learn_synonyms', replace_existing=True)
+        # Aprender/actualizar clusters por TF-IDF del catálogo cada 24 horas
+        scheduler.add_job(_auto_learn_clusters, 'interval', hours=24, id='learn_clusters', replace_existing=True)
         scheduler.start()
         app.state.scheduler = scheduler
-        print("[Scheduler] Iniciado: reintento de vectores (10 min) + aprendizaje de sinónimos (6 h).")
+        print("[Scheduler] Iniciado: vectores (10 min) + sinónimos (6 h) + clusters (24 h).")
     except Exception as e:
         print(f"[Scheduler] No se pudo iniciar: {e}")
 

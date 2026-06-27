@@ -122,6 +122,48 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
             if results:
                 exact_match = False
 
+        # FALLBACK 1.5: FUZZY (corrección de typos, ej. "hamburgesa" -> "hamburguesa")
+        if len(results) == 0 and len(safe_q) >= 3:
+            import difflib
+            vocab = set()
+            for r in c.execute("SELECT name, category FROM search_index WHERE type='product'").fetchall():
+                blob = (str(r["name"] or "") + " " + str(r["category"] or "")).lower()
+                for w in blob.replace(",", " ").split():
+                    w = w.strip(".,()-")
+                    if len(w) >= 4:
+                        vocab.add(w)
+            vocab_list = list(vocab)
+            corrected = []
+            changed = False
+            for word in safe_q.split():
+                if word in vocab or len(word) < 4:
+                    corrected.append(word)
+                else:
+                    m = difflib.get_close_matches(word, vocab_list, n=1, cutoff=0.78)
+                    if m:
+                        corrected.append(m[0]); changed = True
+                    else:
+                        corrected.append(word)
+            if changed:
+                conds, params = [], []
+                for w in corrected:
+                    conds.append("(p.name LIKE ? OR p.category LIKE ?)")
+                    params.extend([f"%{w}%", f"%{w}%"])
+                c.execute(f"""
+                    SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
+                           p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
+                           s.name as storeName
+                    FROM search_index p
+                    LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    WHERE ({' OR '.join(conds)})
+                    AND CAST(p.available AS INTEGER) = 1 AND CAST(s.isOpen AS INTEGER) = 1
+                    ORDER BY (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) + (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) DESC
+                    LIMIT 50
+                """, params)
+                results = [dict(row) for row in c.fetchall()]
+                if results:
+                    exact_match = False
+
         # VECTOR SEARCH ENHANCEMENT WITH USER PROFILE (OPTION 3)
         if len(results) < 5 and len(safe_q) >= 3 and not cluster_match:
             query_vector = None

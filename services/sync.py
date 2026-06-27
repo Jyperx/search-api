@@ -14,6 +14,27 @@ logger = logging.getLogger(__name__)
 vector_worker_pool = ThreadPoolExecutor(max_workers=3)
 
 
+def index_store_location(store_id: str, location):
+    """Guarda la ubicación (lat/lng) de un comercio para el ranking por cercanía."""
+    if not location or not isinstance(location, dict):
+        return
+    lat = location.get("latitude", location.get("lat"))
+    lng = location.get("longitude", location.get("lng"))
+    if lat is None or lng is None:
+        return
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            conn.execute(
+                "INSERT OR REPLACE INTO store_locations (store_id, lat, lng) VALUES (?, ?, ?)",
+                (store_id, float(lat), float(lng))
+            )
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        logger.error(f"Error guardando ubicación de {store_id}: {e}")
+
+
 def index_store_vector(store_id: str, name: str, category: str, description: str = ""):
     """Genera y guarda el embedding de un comercio (para 'Puntos para ti' y búsqueda de tiendas)."""
     try:
@@ -153,10 +174,11 @@ def do_sync_database():
                 conn.commit()
                 conn.close()
 
-            # Vectorizar el comercio (en background)
+            # Vectorizar el comercio (en background) + guardar su ubicación
             vector_worker_pool.submit(
                 index_store_vector, s_id, s_name, s_cat, s_data.get('description', '')
             )
+            index_store_location(s_id, s_data.get('location'))
 
             # Background embedding de productos
             for p in products:
@@ -258,8 +280,9 @@ def do_sync_store(store_id: str):
             conn.commit()
             conn.close()
 
-        # Vectorizar comercio + productos
+        # Vectorizar comercio + productos + ubicación
         vector_worker_pool.submit(index_store_vector, store_id, s_name, s_cat, s_data.get('description', ''))
+        index_store_location(store_id, s_data.get('location'))
         for p in products:
             p_data = p.to_dict()
             if int(bool(p_data.get('available', True))):

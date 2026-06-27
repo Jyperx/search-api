@@ -128,6 +128,127 @@ TIME_RULES_CACHE = [
     {"startHour": 18, "endHour": 23, "cluster": "licores", "scoreBoost": 2.0},
 ]
 
+def _slugify(name: str) -> str:
+    """Normaliza un nombre a clave de cluster: minúsculas, sin tildes, con guiones bajos."""
+    s = (name or "").strip().lower()
+    for a, b in (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"), ("ñ", "n")):
+        s = s.replace(a, b)
+    return s.replace(" ", "_")
+
+
+def _persist_clusters(db):
+    if db:
+        try:
+            db.collection('config').document('algorithm').set({"clusters": MACRO_CLUSTERS_CACHE}, merge=True)
+        except Exception as e:
+            print(f"Error persistiendo clusters: {e}")
+
+
+def set_cluster(db, name, data: dict):
+    """Crea/edita un cluster de búsqueda y lo persiste."""
+    key = _slugify(name)
+    if not key:
+        return MACRO_CLUSTERS_CACHE
+    MACRO_CLUSTERS_CACHE[key] = {
+        "titles": data.get("titles") or [name],
+        "keywords": data.get("keywords", ""),
+        "storeCategories": data.get("storeCategories", ""),
+        "negativeKeywords": data.get("negativeKeywords", ""),
+        "relatedClusters": data.get("relatedClusters", ""),
+    }
+    _persist_clusters(db)
+    return MACRO_CLUSTERS_CACHE
+
+
+def delete_cluster(db, name):
+    MACRO_CLUSTERS_CACHE.pop(_slugify(name), None)
+    _persist_clusters(db)
+    return MACRO_CLUSTERS_CACHE
+
+
+_CLUSTER_STOPWORDS = {
+    "de", "la", "el", "con", "para", "por", "en", "los", "las", "un", "una", "del", "y", "o",
+    "al", "su", "lo", "x", "kg", "gr", "ml", "lt", "und", "unidad", "unidades", "pack", "combo",
+    "grande", "pequeno", "pequeño", "mediano", "especial", "premium", "casero", "natural", "the",
+}
+
+
+def _tokenize(text: str):
+    import re
+    words = re.findall(r"[a-záéíóúñ]+", (text or "").lower())
+    return [w for w in words if len(w) >= 3 and w not in _CLUSTER_STOPWORDS]
+
+
+def learn_clusters_from_catalog(db, min_products=3, max_keywords=15):
+    """Auto-aprende/edita clusters de búsqueda con TF-IDF sobre los nombres de productos por categoría.
+
+    Encuentra las palabras DISTINTIVAS de cada categoría (frecuentes en ella pero no en todas),
+    y arma/actualiza un cluster por categoría. Puro conteo, sin IA.
+    """
+    import math
+    from collections import defaultdict, Counter
+    from core.database import get_db_connection
+
+    conn = get_db_connection()
+    try:
+        rows = conn.execute("SELECT name, category FROM search_index WHERE type='product'").fetchall()
+    finally:
+        conn.close()
+
+    cat_words = defaultdict(Counter)
+    cat_count = Counter()
+    word_in_cats = defaultdict(set)
+
+    for r in rows:
+        cat = (r["category"] or "").strip()
+        if not cat:
+            continue
+        cat_count[cat] += 1
+        seen = set()
+        for w in _tokenize(r["name"]):
+            cat_words[cat][w] += 1
+            seen.add(w)
+        for w in seen:
+            word_in_cats[w].add(cat)
+
+    valid_cats = [c for c in cat_count if cat_count[c] >= min_products]
+    total_cats = max(len(valid_cats), 1)
+
+    learned = {}
+    for cat in valid_cats:
+        n = cat_count[cat]
+        scored = []
+        for w, cnt in cat_words[cat].items():
+            df = len(word_in_cats[w])
+            idf = math.log((total_cats + 1) / (df + 1)) + 1
+            tf = cnt / n
+            scored.append((tf * idf, w))
+        scored.sort(reverse=True)
+        keywords = [w for _, w in scored[:max_keywords]]
+        if not keywords:
+            continue
+
+        slug = _slugify(cat)
+        existing = MACRO_CLUSTERS_CACHE.get(slug, {})
+        existing_kw = set()
+        if existing.get("keywords"):
+            existing_kw = {k.strip().lower() for k in existing["keywords"].split(" OR ") if k.strip()}
+        merged = sorted(existing_kw | set(keywords))
+
+        learned[slug] = {
+            "titles": existing.get("titles") or [cat, f"Lo mejor de {cat}", f"Explora {cat}"],
+            "keywords": " OR ".join(merged),
+            "storeCategories": existing.get("storeCategories") or cat,
+            "negativeKeywords": existing.get("negativeKeywords", ""),
+            "relatedClusters": existing.get("relatedClusters", ""),
+        }
+
+    for k, v in learned.items():
+        MACRO_CLUSTERS_CACHE[k] = v
+    _persist_clusters(db)
+    return learned
+
+
 ANCHORS = [] # Para anclas dinámicas si aplica
 
 ENV_ANCHORS = [

@@ -588,6 +588,48 @@ def auto_learn_synonyms():
 def get_clusters():
     return {"status": "ok", "clusters": MACRO_CLUSTERS_CACHE}
 
+class ClusterPayload(BaseModel):
+    name: str
+    titles: List[str] = []
+    keywords: str = ""
+    storeCategories: str = ""
+    negativeKeywords: str = ""
+    relatedClusters: str = ""
+
+@router.post("/api/admin/cluster")
+def upsert_cluster(req: ClusterPayload):
+    from data.clusters import set_cluster
+    try:
+        set_cluster(core.firebase.db, req.name, {
+            "titles": req.titles, "keywords": req.keywords,
+            "storeCategories": req.storeCategories, "negativeKeywords": req.negativeKeywords,
+            "relatedClusters": req.relatedClusters,
+        })
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.delete("/api/admin/cluster/{name}")
+def remove_cluster(name: str):
+    from data.clusters import delete_cluster
+    try:
+        delete_cluster(core.firebase.db, name)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.post("/api/admin/auto-learn-clusters")
+def auto_learn_clusters():
+    """Aprendizaje matemático de clusters por TF-IDF sobre el catálogo (sin IA)."""
+    from data.clusters import learn_clusters_from_catalog
+    try:
+        learned = learn_clusters_from_catalog(core.firebase.db)
+        return {"status": "ok", "learned": learned, "count": len(learned)}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "error", "message": str(e)}
+
 @router.put("/api/admin/clusters")
 def update_clusters(body: dict):
     """Update clusters in Firestore and hot-reload in memory."""
@@ -742,6 +784,8 @@ class StorePayload(BaseModel):
     description: Optional[str] = ""
     imageUrl: Optional[str] = ""
     isOpen: Optional[bool] = True
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 
 @router.post("/api/index/store")
@@ -762,6 +806,9 @@ def index_store(payload: StorePayload):
         vector_worker_pool.submit(
             index_store_vector, payload.id, payload.name, payload.category or '', payload.description or ''
         )
+        if payload.lat is not None and payload.lng is not None:
+            from services.sync import index_store_location
+            index_store_location(payload.id, {"latitude": payload.lat, "longitude": payload.lng})
         return {"status": "ok", "store_id": payload.id}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -808,17 +855,23 @@ def _do_seed_demo():
     try:
         rows = []  # (tuple para search_index)
         embed_jobs = []  # (callable args)
+        loc_jobs = []
         for i, (cat, sname, products) in enumerate(DEMO_STORES):
             sid = f"demo_store_{i+1}"
             sdesc = f"El mejor lugar de {cat.lower()} en tu zona."
             s_likes = random.randint(5, 200)
+            # Ubicaciones dispersas alrededor de un centro (Bogotá aprox) para probar cercanía
+            s_lat = 4.65 + random.uniform(-0.08, 0.08)
+            s_lng = -74.10 + random.uniform(-0.08, 0.08)
             fdb.collection('stores').document(sid).set({
                 "name": sname, "category": cat, "description": sdesc,
                 "isOpen": True, "likes": s_likes, "views": random.randint(50, 1000),
+                "location": {"latitude": s_lat, "longitude": s_lng},
                 "isDemo": True, "createdAt": _fs.SERVER_TIMESTAMP,
             })
             rows.append((sid, 'store', sid, sname, cat, sdesc, '0', '', '', 0, '', s_likes, 0, 0, 1, 1))
             embed_jobs.append(('store', sid, sname, cat, sdesc))
+            loc_jobs.append((sid, s_lat, s_lng))
 
             for j, pname in enumerate(products):
                 pid = f"demo_prod_{i+1}_{j+1}"
@@ -847,6 +900,8 @@ def _do_seed_demo():
                 conn.execute(
                     "INSERT INTO search_index (id, type, storeId, name, category, description, price, icon, imageUrl, onSale, salePrice, likes, views, purchases, available, isOpen) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
+            for (sid, s_lat, s_lng) in loc_jobs:
+                conn.execute("INSERT OR REPLACE INTO store_locations (store_id, lat, lng) VALUES (?, ?, ?)", (sid, s_lat, s_lng))
             conn.commit()
             conn.close()
 

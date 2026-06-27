@@ -22,6 +22,26 @@ def _clamp(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, x))
 
 
+def haversine_km(lat1, lng1, lat2, lng2) -> float:
+    """Distancia en km entre dos coordenadas."""
+    try:
+        r = 6371.0
+        p1, p2 = math.radians(lat1), math.radians(lat2)
+        dphi = math.radians(lat2 - lat1)
+        dlmb = math.radians(lng2 - lng1)
+        a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+        return 2 * r * math.asin(math.sqrt(a))
+    except Exception:
+        return 9999.0
+
+
+def proximity_boost(dist_km: float, scale: float = 5.0, weight: float = 0.4) -> float:
+    """Boost que premia la cercanía: máximo `weight` a 0 km, decae con la distancia."""
+    if dist_km is None or dist_km >= 9999:
+        return 0.0
+    return weight * math.exp(-dist_km / scale)
+
+
 def _time_bump(hour: int, center: float, spread: float) -> float:
     """Curva gaussiana de proximidad horaria con wraparound de medianoche."""
     diff = abs(hour - center)
@@ -31,41 +51,54 @@ def _time_bump(hour: int, center: float, spread: float) -> float:
 
 
 def get_weather(lat, lng, override_temp=None, override_code=None):
-    """Devuelve (temp, code). Soporta overrides del simulador admin y caché por zona."""
+    """Devuelve (temp, code, tmax, tmin). Soporta overrides del simulador y caché por zona.
+    tmax/tmin = máx/mín del día local (para umbrales relativos a la ciudad)."""
     if override_temp is not None:
-        return float(override_temp), int(override_code or 0)
+        return float(override_temp), int(override_code or 0), None, None
     if lat is None or lng is None:
-        return None, None
+        return None, None, None, None
     try:
         lat_key, lng_key = round(lat, 1), round(lng, 1)
         loc_key = f"{lat_key}_{lng_key}"
         now_ts = time.time()
         cached = WEATHER_CACHE_STORE.get(loc_key)
         if cached and (now_ts - cached["time"] < 3600):
-            return cached["temp"], cached["code"]
+            return cached["temp"], cached["code"], cached.get("tmax"), cached.get("tmin")
         w_res = requests.get(
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat_key}&longitude={lng_key}&current_weather=true",
-            timeout=2,
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat_key}&longitude={lng_key}"
+            f"&current_weather=true&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1",
+            timeout=3,
         ).json()
         if "current_weather" in w_res:
             temp = w_res["current_weather"].get("temperature", 20)
             code = w_res["current_weather"].get("weathercode", 0)
-            WEATHER_CACHE_STORE[loc_key] = {"temp": temp, "code": code, "time": now_ts}
-            return temp, code
+            daily = w_res.get("daily", {})
+            tmax = (daily.get("temperature_2m_max") or [None])[0]
+            tmin = (daily.get("temperature_2m_min") or [None])[0]
+            WEATHER_CACHE_STORE[loc_key] = {"temp": temp, "code": code, "tmax": tmax, "tmin": tmin, "time": now_ts}
+            return temp, code, tmax, tmin
     except Exception as e:
         logger.warning(f"[Weather] Error obteniendo clima: {e}")
-    return None, None
+    return None, None, None, None
 
 
-def compute_context_weights(temp, code, hour: int) -> dict:
-    """Pesos CONTINUOS 0..1 de cada concepto ambiental/horario."""
+def compute_context_weights(temp, code, hour: int, tmax=None, tmin=None) -> dict:
+    """Pesos CONTINUOS 0..1 de cada concepto ambiental/horario.
+    Si hay tmax/tmin del día, el calor/frío es RELATIVO a la ciudad (lo que aquí se siente caluroso)."""
     weights = {}
 
     if temp is not None:
-        weights["ENV_CALOR"] = _clamp((temp - 20) / 12)        # 0 a 20°, 1 a 32°+
-        cold = _clamp((18 - temp) / 12)                          # 0 a 18°, 1 a 6°
-        if code is not None and code >= 50:                     # lluvia/niebla → sube frío
+        abs_hot = _clamp((temp - 20) / 12)      # absoluto: 0 a 20°, 1 a 32°+
+        abs_cold = _clamp((18 - temp) / 12)     # absoluto: 0 a 18°, 1 a 6°
+        if tmax is not None and tmin is not None and (tmax - tmin) >= 3:
+            rel = _clamp((temp - tmin) / (tmax - tmin))  # posición en el rango del día local
+            hot = 0.6 * rel + 0.4 * abs_hot
+            cold = 0.6 * (1 - rel) + 0.4 * abs_cold
+        else:
+            hot, cold = abs_hot, abs_cold
+        if code is not None and code >= 50:      # lluvia/niebla → sube frío
             cold = max(cold, 0.5)
+        weights["ENV_CALOR"] = hot
         weights["ENV_FRIO"] = cold
 
     if hour is not None:

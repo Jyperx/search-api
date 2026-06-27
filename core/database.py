@@ -146,6 +146,14 @@ def init_db():
         c.execute('CREATE INDEX IF NOT EXISTS idx_uac_product ON user_activity_cache(product_id)')
 
         c.execute('''
+            CREATE TABLE IF NOT EXISTS store_locations (
+                store_id TEXT PRIMARY KEY,
+                lat REAL,
+                lng REAL
+            )
+        ''')
+
+        c.execute('''
             CREATE TABLE IF NOT EXISTS section_stats (
                 section_id TEXT PRIMARY KEY,
                 impressions INTEGER DEFAULT 0,
