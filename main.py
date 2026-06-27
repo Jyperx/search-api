@@ -39,12 +39,40 @@ async def lifespan(app: FastAPI):
             cargar_conceptos_en_memoria()
         except Exception as e:
             print(f"[Conceptos] No se pudieron construir al inicio: {e}")
-    
-    # Próximamente: iniciar workers y scheduler (Fase 2 y 3)
+
+    # 5. Scheduler: tareas automáticas en background
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from services.sync import retry_vector_queue_task
+        from data.synonyms import learn_synonyms_from_clicks
+
+        def _auto_learn_synonyms():
+            try:
+                learned = learn_synonyms_from_clicks(core.firebase.db)
+                if learned:
+                    print(f"[Scheduler] Auto-aprendidos {len(learned)} grupos de sinónimos por co-clics.")
+            except Exception as e:
+                print(f"[Scheduler] Error aprendiendo sinónimos: {e}")
+
+        scheduler = BackgroundScheduler(timezone="UTC")
+        # Reintentar embeddings fallidos cada 10 min (rescata productos sin vectorizar)
+        scheduler.add_job(retry_vector_queue_task, 'interval', minutes=10, id='retry_vectors', replace_existing=True)
+        # Aprender sinónimos por co-clics cada 6 horas
+        scheduler.add_job(_auto_learn_synonyms, 'interval', hours=6, id='learn_synonyms', replace_existing=True)
+        scheduler.start()
+        app.state.scheduler = scheduler
+        print("[Scheduler] Iniciado: reintento de vectores (10 min) + aprendizaje de sinónimos (6 h).")
+    except Exception as e:
+        print(f"[Scheduler] No se pudo iniciar: {e}")
+
     yield
-    
-    # Shutdown events
-    pass
+
+    # Shutdown
+    try:
+        if getattr(app.state, "scheduler", None):
+            app.state.scheduler.shutdown(wait=False)
+    except Exception:
+        pass
 
 app = FastAPI(title="Punto Search API", lifespan=lifespan)
 
