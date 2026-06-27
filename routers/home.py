@@ -149,6 +149,14 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             except Exception as e:
                 logger.warning(f"[Geo] No se pudieron cargar ubicaciones: {e}")
 
+        # Engagement real por producto (CTR aprendido + exploración bandit)
+        item_stats = {}
+        try:
+            for sr in c.execute("SELECT product_id, impressions, clicks, purchases FROM item_stats").fetchall():
+                item_stats[sr["product_id"]] = (sr["impressions"], sr["clicks"], sr["purchases"])
+        except Exception as e:
+            logger.warning(f"[ItemStats] Error: {e}")
+
         def add_proximity(row):
             """Suma un boost por cercanía al final_score (si hay ubicación)."""
             if not store_loc or req.lat is None:
@@ -160,20 +168,25 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 row["_prox"] = proximity_boost(dist)
                 row["final_score"] = row.get("final_score", 0) + row["_prox"]
 
-        def take_from_pool(candidates, n, store_cap=2):
+        def take_from_pool(candidates, n, store_cap=2, cat_cap=None):
             out = []
             store_counts = {}
+            cat_counts = {}
             for row in candidates:
                 rid = row["id"]
                 sid = row.get("storeId", "")
+                cat = str(row.get("category", "")).lower()
                 if rid in global_seen_ids:
                     continue
                 if store_counts.get(sid, 0) >= store_cap:
                     continue
+                if cat_cap is not None and cat_counts.get(cat, 0) >= cat_cap:
+                    continue  # diversidad: no saturar de una sola categoría
                 row.pop("embedding", None)  # binario, no serializable a JSON
                 out.append(row)
                 global_seen_ids.add(rid)
                 store_counts[sid] = store_counts.get(sid, 0) + 1
+                cat_counts[cat] = cat_counts.get(cat, 0) + 1
                 if len(out) >= n:
                     break
             return out
@@ -195,7 +208,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             """, (ctx,))
             for raw in c.fetchall():
                 row = dict(raw)
-                row["final_score"] = score_product(row, row["distance"])
+                row["final_score"] = score_product(row, row["distance"], item_stats)
                 add_proximity(row)
                 pool.append(row)
         else:
@@ -213,7 +226,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             for raw in c.fetchall():
                 row = dict(raw)
                 row["distance"] = 1.0
-                row["final_score"] = score_product(row, 1.0)
+                row["final_score"] = score_product(row, 1.0, item_stats)
                 add_proximity(row)
                 pool.append(row)
 
@@ -228,7 +241,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             featured_candidates = sorted(pool, key=lambda x: x.get("distance", 1.0) - x.get("_prox", 0.0))
         else:
             featured_candidates = pool  # usuario nuevo → ya está ordenado por popularidad/contexto
-        featured = take_from_pool(featured_candidates, 6)
+        featured = take_from_pool(featured_candidates, 6, cat_cap=3)  # máx 3 de una misma categoría
         if featured:
             feed_sections.append({
                 "id": "dyn_for_you",
@@ -504,6 +517,12 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         # 5. Registrar impresiones por sección (denominador del CTR)
         if not req.sim_prompt:
             try:
+                shown_pids = set()
+                for sec in feed_sections:
+                    if sec.get("type") == "products":
+                        for it in sec.get("items", []):
+                            if it.get("id"):
+                                shown_pids.add(it["id"])
                 with sqlite_lock:
                     for sec in feed_sections:
                         c.execute(
@@ -511,9 +530,15 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                             "ON CONFLICT(section_id) DO UPDATE SET impressions = impressions + 1, updated_at = datetime('now')",
                             (sec["id"],)
                         )
+                    for pid in shown_pids:
+                        c.execute(
+                            "INSERT INTO item_stats (product_id, impressions, clicks, purchases) VALUES (?, 1, 0, 0) "
+                            "ON CONFLICT(product_id) DO UPDATE SET impressions = impressions + 1, updated_at = datetime('now')",
+                            (pid,)
+                        )
                     conn.commit()
             except Exception as e:
-                logger.warning(f"[Section Impressions] Error: {e}")
+                logger.warning(f"[Impressions] Error: {e}")
 
     except Exception as e:
         logger.error(f"[Home Feed] Unhandled error: {e}")

@@ -82,8 +82,18 @@ def calculate_user_vector(activity_docs: list, current_hour: int) -> bytes | Non
                         act_multiplier *= 3.0
                     elif diff >= 8:
                         act_multiplier *= 0.3
+
+                    # REACTIVIDAD DE SESIÓN: lo de los últimos minutos pesa mucho más,
+                    # para que el feed reaccione a lo que el usuario está mirando AHORA.
+                    mins_ago = (datetime.now(timezone.utc) - act_dt).total_seconds() / 60.0
+                    if mins_ago < 15:
+                        act_multiplier *= 3.0
+                    elif mins_ago < 60:
+                        act_multiplier *= 1.8
+                    elif mins_ago < 180:
+                        act_multiplier *= 1.3
             except: pass
-        
+
         if p_id:
             weight = calculate_time_decay_func(ts) * act_multiplier
             # TODO: Implementar lógica de aversión de categorías (restar si ignored > 5)

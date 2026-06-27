@@ -144,8 +144,13 @@ def build_context_vector(user_vec_np, weights: dict, Wu: float = 2.5):
     return sqlite_vec.serialize_float32(ctx.tolist())
 
 
-def score_product(row: dict, distance: float) -> float:
-    """Fórmula de scoring unificada (afinidad + popularidad + conversión + novedad + oferta)."""
+def score_product(row: dict, distance: float, stats: dict | None = None) -> float:
+    """Scoring unificado: afinidad + popularidad + CTR aprendido + exploración (bandit) + novedad + oferta.
+
+    `stats`: {product_id: (impressions, clicks, purchases)} con engagement REAL del feed.
+    El CTR aprendido crece en influencia a medida que hay datos; la exploración (UCB) premia
+    a los productos poco mostrados para descubrir cuáles gustan.
+    """
     affinity = max(0.0, 1.0 - distance)
     purchases = float(row.get("purchases") or 0)
     likes = float(row.get("likes") or 0)
@@ -164,11 +169,22 @@ def score_product(row: dict, distance: float) -> float:
     novelty = 0.2 if (purchases == 0 and views <= 15) else (-0.3 if purchases == 0 and views > 50 else 0.0)
     sale_boost = 0.15 if str(row.get("onSale", "0")) == "1" else 0.0
 
-    # Ruido determinista por id (estable entre llamadas para el mismo producto)
-    rid = str(row.get("id", ""))
-    noise = (abs(hash(rid)) % 100) / 1000.0
+    # --- Señal APRENDIDA (CTR/conversión real del feed) + EXPLORACIÓN (bandit UCB) ---
+    learned = 0.0
+    explore = 0.30  # default alto: producto nunca mostrado → máxima curiosidad
+    if stats is not None:
+        st = stats.get(str(row.get("id", "")))
+        if st:
+            imp, clk, pur = st
+            ctr = (clk + 1.0) / (imp + 10.0)          # suavizado bayesiano
+            conv = (pur + 0.5) / (imp + 10.0)
+            learned = ctr + conv * 2.0                 # comprar pesa más que clicar
+            explore = 0.30 / math.sqrt(imp + 1.0)      # menos exploración cuanto más se ha mostrado
 
-    return (affinity * 0.55) + (popularity * 0.2) + cr_boost + (novelty * 0.1) + (sale_boost * 0.1) + noise
+    noise = (abs(hash(str(row.get("id", "")))) % 50) / 1000.0
+
+    return (affinity * 0.55) + (popularity * 0.18) + cr_boost \
+        + (learned * 0.25) + (explore * 0.12) + (novelty * 0.08) + (sale_boost * 0.1) + noise
 
 
 def concept_distance(product_emb_bytes: bytes, concept_id: str) -> float:

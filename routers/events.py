@@ -47,6 +47,19 @@ def track_user_events(uid: str, req: UserEventsRequest):
                         "ON CONFLICT(section_id) DO UPDATE SET clicks = clicks + 1, updated_at = datetime('now')",
                         (act.sectionId,)
                     )
+                # CTR/conversión por producto (señal aprendida + recompensa del bandit)
+                if act.productId and act.type in ('view_product', 'click', 'cart', 'like'):
+                    conn.execute(
+                        "INSERT INTO item_stats (product_id, impressions, clicks, purchases) VALUES (?, 0, 1, 0) "
+                        "ON CONFLICT(product_id) DO UPDATE SET clicks = clicks + 1, updated_at = datetime('now')",
+                        (act.productId,)
+                    )
+                if act.productId and act.type == 'purchase':
+                    conn.execute(
+                        "INSERT INTO item_stats (product_id, impressions, clicks, purchases) VALUES (?, 0, 0, 1) "
+                        "ON CONFLICT(product_id) DO UPDATE SET purchases = purchases + 1, updated_at = datetime('now')",
+                        (act.productId,)
+                    )
             conn.execute("DELETE FROM user_vectors WHERE user_id = ?", (uid,))
             conn.execute("DELETE FROM user_vector_meta WHERE user_id = ?", (uid,))
             conn.commit()

@@ -163,6 +163,16 @@ def init_db():
         ''')
 
         c.execute('''
+            CREATE TABLE IF NOT EXISTS item_stats (
+                product_id TEXT PRIMARY KEY,
+                impressions INTEGER DEFAULT 0,
+                clicks INTEGER DEFAULT 0,
+                purchases INTEGER DEFAULT 0,
+                updated_at TEXT DEFAULT (datetime('now'))
+            )
+        ''')
+
+        c.execute('''
             CREATE TABLE IF NOT EXISTS vector_queue (
                 product_id TEXT PRIMARY KEY,
                 name TEXT,
