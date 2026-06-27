@@ -27,7 +27,7 @@ def track_user_events(uid: str, req: UserEventsRequest):
         return {"status": "ok"}
         
     try:
-        score_map = {'purchase': 5.0, 'cart': 3.0, 'search': 2.0, 'click': 1.0, 'view': 1.0, 'view_product': 1.0, 'ignored': -0.5}
+        score_map = {'purchase': 5.0, 'like': 4.0, 'cart': 3.0, 'search': 2.0, 'click': 1.0, 'view': 1.0, 'view_product': 1.0, 'ignored': -0.5}
         with sqlite_lock:
             conn = get_db_connection()
             for act in req.activities:

@@ -60,9 +60,10 @@ def calculate_user_vector(activity_docs: list, current_hour: int) -> bytes | Non
         
         act_multiplier = 1.0
         if act_type == 'purchase': act_multiplier = 5.0
+        elif act_type == 'like': act_multiplier = 4.0
         elif act_type == 'cart': act_multiplier = 3.0
         elif act_type == 'search': act_multiplier = 2.0
-        elif act_type == 'view' or act_type == 'click': act_multiplier = 1.0
+        elif act_type in ('view', 'click', 'view_product'): act_multiplier = 1.0
         elif act_type == 'ignored': act_multiplier = -0.5
         
         if current_hour is not None and ts:

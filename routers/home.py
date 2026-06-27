@@ -116,7 +116,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
 
         # 1.2 Alimentar user_activity_cache desde la actividad reciente (fuente del collaborative filtering)
         if req.activities and not req.sim_prompt:
-            score_map = {'purchase': 5.0, 'cart': 3.0, 'search': 2.0, 'click': 1.0,
+            score_map = {'purchase': 5.0, 'like': 4.0, 'cart': 3.0, 'search': 2.0, 'click': 1.0,
                          'view': 1.0, 'view_product': 1.0, 'ignored': -0.5}
             try:
                 with sqlite_lock:
