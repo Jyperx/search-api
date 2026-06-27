@@ -48,13 +48,13 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
     safe_q = q.replace('"', '').replace("'", "").lower().strip()
     
     # === CEREBRO V2 INJECTION ===
+    # Solo expandimos a cluster si el usuario escribe el NOMBRE del cluster (ej. "desayuno").
+    # Una palabra de producto ("hamburguesa") NO debe secuestrar la búsqueda hacia todo un cluster.
     cluster_match = None
     cluster_name = None
-    for c_key, c_val in MACRO_CLUSTERS_CACHE.items():
-        if safe_q == c_key or safe_q in [k.strip().lower() for k in c_val.get("keywords", "").split(" OR ")]:
-            cluster_match = True
-            cluster_name = c_key
-            break
+    if safe_q in MACRO_CLUSTERS_CACHE:
+        cluster_match = True
+        cluster_name = safe_q
             
     if cluster_match:
         fts_query = build_cluster_fts_query(cluster_name, MACRO_CLUSTERS_CACHE[cluster_name], True)
