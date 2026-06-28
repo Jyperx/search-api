@@ -243,6 +243,47 @@ def do_sync_database():
         global_sync_state["is_syncing"] = False
         global_sync_state["status"] = f"error: {e}"
 
+def reconcile_catalog():
+    """Quita del índice los productos/comercios que ya NO existen en Firestore (anti-fantasmas).
+    No re-vectoriza (barato): solo elimina lo que sobra. Las altas las cubren los webhooks/sync."""
+    if not core.firebase.db:
+        return
+    try:
+        valid_stores = set()
+        valid_products = set()
+        for store in core.firebase.db.collection('stores').stream():
+            valid_stores.add(store.id)
+            for p in core.firebase.db.collection('stores').document(store.id).collection('products').stream():
+                valid_products.add(p.id)
+
+        # Si Firestore vino vacío, no borramos nada (evita vaciar por un fallo de lectura)
+        if not valid_stores:
+            return
+
+        removed = 0
+        with sqlite_lock:
+            conn = get_db_connection()
+            rows = conn.execute("SELECT id, type FROM search_index").fetchall()
+            for row in rows:
+                rid, rtype = row["id"], row["type"]
+                if rtype == 'product' and rid not in valid_products:
+                    conn.execute("DELETE FROM search_index WHERE id=? AND type='product'", (rid,))
+                    conn.execute("DELETE FROM product_vectors WHERE product_id=?", (rid,))
+                    conn.execute("DELETE FROM item_stats WHERE product_id=?", (rid,))
+                    removed += 1
+                elif rtype == 'store' and rid not in valid_stores:
+                    conn.execute("DELETE FROM search_index WHERE id=? AND type='store'", (rid,))
+                    conn.execute("DELETE FROM store_vectors WHERE store_id=?", (rid,))
+                    conn.execute("DELETE FROM store_locations WHERE store_id=?", (rid,))
+                    removed += 1
+            conn.commit()
+            conn.close()
+        if removed:
+            print(f"[Reconcile] {removed} fantasmas eliminados del índice.")
+    except Exception as e:
+        logger.error(f"[Reconcile] Error: {e}")
+
+
 def retry_vector_queue_task():
     """Función para el scheduler de APScheduler para reintentos"""
     rows_to_retry = []

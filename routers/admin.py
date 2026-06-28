@@ -535,13 +535,22 @@ def reset_vectors_db():
             conn = get_db_connection()
             c = conn.cursor()
             c.execute("DROP TABLE IF EXISTS product_vectors")
+            c.execute("DROP TABLE IF EXISTS store_vectors")
             c.execute("DROP TABLE IF EXISTS anchor_vectors")
             c.execute("DELETE FROM anchor_metadata")
+            # Limpiezas que faltaban (por eso el contador "sin vectorizar" se quedaba pegado):
+            for tbl in ("vector_queue", "item_stats", "store_locations"):
+                try:
+                    c.execute(f"DELETE FROM {tbl}")
+                except Exception:
+                    pass
             conn.commit()
             conn.close()
-        
+
         init_db()
-        return {"status": "ok", "message": "Vectores limpiados correctamente."}
+        # Reiniciar el estado del sync para que el admin muestre 0
+        global_sync_state.update({"is_syncing": False, "total_products": 0, "completed_products": 0, "status": "idle"})
+        return {"status": "ok", "message": "Vectores y cola limpiados. Corre 'Sincronizar Catálogo' para re-vectorizar."}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -950,6 +959,13 @@ def seed_demo(background_tasks: BackgroundTasks):
     background_tasks.add_task(_do_seed_demo)
     return {"status": "processing"}
 
+
+@router.post("/api/admin/reconcile")
+def reconcile_now(background_tasks: BackgroundTasks):
+    """Quita del índice productos/comercios que ya no existen en Firestore (anti-fantasmas)."""
+    from services.sync import reconcile_catalog
+    background_tasks.add_task(reconcile_catalog)
+    return {"status": "processing"}
 
 @router.post("/api/sync")
 def sync_database(background_tasks: BackgroundTasks):

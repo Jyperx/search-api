@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
     # 5. Scheduler: tareas automáticas en background
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
-        from services.sync import retry_vector_queue_task
+        from services.sync import retry_vector_queue_task, reconcile_catalog
         from data.synonyms import learn_synonyms_from_clicks
         from data.clusters import learn_clusters_from_catalog
         from services.context_engine import tune_ranking_weights
@@ -81,9 +81,11 @@ async def lifespan(app: FastAPI):
         scheduler.add_job(_auto_learn_clusters, 'interval', hours=24, id='learn_clusters', replace_existing=True)
         # Auto-ajustar pesos del ranking cada 12 horas
         scheduler.add_job(_auto_tune_weights, 'interval', hours=12, id='tune_weights', replace_existing=True)
+        # Reconciliar catálogo (quitar fantasmas) cada 6 horas
+        scheduler.add_job(reconcile_catalog, 'interval', hours=6, id='reconcile_catalog', replace_existing=True)
         scheduler.start()
         app.state.scheduler = scheduler
-        print("[Scheduler] Iniciado: vectores (10 min) + sinónimos (6 h) + clusters (24 h) + pesos (12 h).")
+        print("[Scheduler] Iniciado: vectores (10 min) + sinónimos (6 h) + clusters (24 h) + pesos (12 h) + reconcile (6 h).")
     except Exception as e:
         print(f"[Scheduler] No se pudo iniciar: {e}")
 

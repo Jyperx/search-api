@@ -266,9 +266,23 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                         
         final_stores = [r for r in results if r.get('type') == 'store']
         final_products = [r for r in results if r.get('type') != 'store']
+
+        # Para consultas de intención (no exactas, ej. "tengo hambre"), diversificar por
+        # categoría para no mostrar todo de un mismo tipo (ej. solo Restaurante).
+        if not exact_match and len(final_products) > 3:
+            from collections import OrderedDict
+            buckets = OrderedDict()
+            for p in final_products:
+                buckets.setdefault((p.get('category') or 'otros').lower(), []).append(p)
+            interleaved = []
+            while any(buckets.values()):
+                for k in list(buckets.keys()):
+                    if buckets[k]:
+                        interleaved.append(buckets[k].pop(0))
+            final_products = interleaved
+
         top_stores = final_stores[:4]
-        remaining = final_stores[4:] + final_products
-        results = top_stores + remaining
+        results = top_stores + final_stores[4:] + final_products
                     
     except Exception as e:
         import traceback
