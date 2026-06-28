@@ -267,19 +267,21 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
         final_stores = [r for r in results if r.get('type') == 'store']
         final_products = [r for r in results if r.get('type') != 'store']
 
-        # Para consultas de intención (no exactas, ej. "tengo hambre"), diversificar por
-        # categoría para no mostrar todo de un mismo tipo (ej. solo Restaurante).
-        if not exact_match and len(final_products) > 3:
-            from collections import OrderedDict
-            buckets = OrderedDict()
-            for p in final_products:
-                buckets.setdefault((p.get('category') or 'otros').lower(), []).append(p)
-            interleaved = []
-            while any(buckets.values()):
-                for k in list(buckets.keys()):
-                    if buckets[k]:
-                        interleaved.append(buckets[k].pop(0))
-            final_products = interleaved
+        # Para consultas de intención (no exactas), evitar que UNA categoría acapare,
+        # PERO sin romper la relevancia: se conserva el orden (lo más relevante arriba) y
+        # solo se baja el exceso de una misma categoría. Lo irrelevante NO se promueve.
+        if not exact_match and len(final_products) > 6:
+            CAP = 4
+            cat_counts = {}
+            kept, overflow = [], []
+            for p in final_products:  # ya vienen en orden de relevancia
+                cat = (p.get('category') or 'otros').lower()
+                if cat_counts.get(cat, 0) < CAP:
+                    kept.append(p)
+                    cat_counts[cat] = cat_counts.get(cat, 0) + 1
+                else:
+                    overflow.append(p)
+            final_products = kept + overflow
 
         top_stores = final_stores[:4]
         results = top_stores + final_stores[4:] + final_products
