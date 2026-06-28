@@ -37,6 +37,27 @@ SECTION_SUBTITLES = [
     "Esto te va a encantar", "Va con tu estilo", "No te lo pierdas",
 ]
 
+# Pools de títulos creativos por categoría (fallback cuando no hay título de admin).
+# Evita mostrar el nombre plano de la categoría; rotan para sentirse frescos.
+CATEGORY_TITLES = {
+    "restaurante": ["Para sentarte a comer", "Sabores de verdad", "Como en casa", "Un buen plato"],
+    "comidas rápidas": ["Antojo rápido", "Para hoy sin esperar", "Lo que se te antoja ya", "Rápido y rico"],
+    "panadería": ["Recién horneado", "El olorcito a pan", "Para el cafecito", "Dulce y salado"],
+    "mercados": ["Llena la nevera", "El mercado en casa", "Surte tu despensa", "Frescura a domicilio"],
+    "spa & belleza": ["Consiéntete", "Tiempo para ti", "Date un gusto", "Belleza a un toque"],
+    "farmacia": ["Tu botiquín en casa", "Salud al instante", "Lo que necesitas, ya", "Cuídate"],
+    "barbería": ["Renueva tu look", "Hora de cortarse", "Estilo fresco", "Para verte bien"],
+    "licores": ["Para la celebración", "Prende el plan", "Salud y buena vibra", "Tus favoritos"],
+    "ferretería": ["Manos a la obra", "Arregla lo que falta", "Para tu proyecto", "Todo para la casa"],
+    "ropa & moda": ["Renueva tu clóset", "Tu nuevo look", "Tendencias para ti", "Vístete a tu estilo"],
+    "tecnología": ["Gadgets para ti", "Lo último en tech", "Conéctate", "Tus accesorios"],
+    "servicios": ["Resuelve hoy", "A tu servicio", "Lo que necesitas resolver", "Sin complicarte"],
+    "otros": ["Descubre algo nuevo", "Para ti", "Échale un ojo", "Quizás te guste"],
+}
+
+# Plantillas "basadas en gusto" cuando la categoría coincide con tus intereses ({c} en minúscula).
+TASTE_TITLE_TEMPLATES = ["Porque te gusta {c}", "Más de {c} para ti", "Sigue con {c}", "{c} para ti"]
+
 class HomeFeedRequest(BaseModel):
     activities: List[dict] = []
     lat: Optional[float] = None
@@ -172,9 +193,17 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
 
         # Afinidad de tienda: cuántas veces visitó cada comercio (de la actividad reciente)
         store_visits = {}
+        # Categorías que le interesan al usuario (para títulos "basados en gusto")
+        interest_counts = {}
+        POSITIVE = {'view_product', 'view', 'click', 'like', 'cart', 'purchase', 'search'}
         for act in req.activities:
             if act.get('type') == 'view_store' and act.get('storeId'):
                 store_visits[act['storeId']] = store_visits.get(act['storeId'], 0) + 1
+            cat_a = (act.get('category') or '').lower()
+            if cat_a and cat_a != 'general' and act.get('type') in POSITIVE:
+                interest_counts[cat_a] = interest_counts.get(cat_a, 0) + 1
+        # Solo categorías con interés real (2+ interacciones) llevan título "basado en gusto"
+        user_interest_cats = {c for c, n in interest_counts.items() if n >= 2}
 
         def add_proximity(row):
             """Suma boost por cercanía + cold-start de gustos + afinidad de tienda al final_score."""
@@ -388,8 +417,15 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             # Carrusel por categoría: alterna entre negocios (variedad); si solo hay uno, llena con ese
             items = take_interleaved_by_store(cat_groups[cat], 10)
             if len(items) >= 2:
-                titles = anchor_title_map.get(cat.lower())
-                title = random.choice(titles) if titles else cat
+                cat_l = cat.lower()
+                if cat_l in user_interest_cats:
+                    title = random.choice(TASTE_TITLE_TEMPLATES).format(c=cat_l)  # basado en gusto
+                elif anchor_title_map.get(cat_l):
+                    title = random.choice(anchor_title_map[cat_l])               # título de admin
+                elif CATEGORY_TITLES.get(cat_l):
+                    title = random.choice(CATEGORY_TITLES[cat_l])                # pool creativo
+                else:
+                    title = cat                                                  # último recurso
                 feed_sections.append({
                     "id": f"dyn_cat_{str(cat).replace(' ', '_')}",
                     "type": "products",
