@@ -413,8 +413,9 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
                            s.name as storeName
                     FROM search_index p
-                    LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
                     WHERE p.type = 'product' AND p.category = ? AND CAST(p.available AS INTEGER) = 1
+                    AND CAST(s.isOpen AS INTEGER) = 1
                     ORDER BY RANDOM()
                     LIMIT 15
                 """, (exp_cat,))

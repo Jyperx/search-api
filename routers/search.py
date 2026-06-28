@@ -76,13 +76,12 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
         c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                    p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                   s.name as storeName
+                   s.name as storeName, s.isOpen as storeIsOpen
             FROM search_index p
             LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
-            WHERE search_index MATCH ? 
-            AND CAST(p.available AS INTEGER) = 1 
-            AND CAST(s.isOpen AS INTEGER) = 1
-            ORDER BY 
+            WHERE search_index MATCH ?
+            AND CAST(p.available AS INTEGER) = 1
+            ORDER BY
                 rank - (
                     (COALESCE(CAST(p.likes AS REAL), 0) * 0.1) + 
                     (COALESCE(CAST(p.purchases AS REAL), 0) * 0.2) + 
@@ -102,13 +101,12 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
             c.execute("""
                 SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                        p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                       s.name as storeName
+                       s.name as storeName, s.isOpen as storeIsOpen
                 FROM search_index p
                 LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
                 WHERE (p.name LIKE ? OR p.category LIKE ? OR p.description LIKE ?)
-                AND CAST(p.available AS INTEGER) = 1 
-                AND CAST(s.isOpen AS INTEGER) = 1
-                ORDER BY 
+                AND CAST(p.available AS INTEGER) = 1
+                ORDER BY
                     (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) +
                     (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) +
                     (COALESCE(CAST(p.views AS REAL), 0) * 0.5) +
@@ -152,11 +150,11 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                 c.execute(f"""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName
+                           s.name as storeName, s.isOpen as storeIsOpen
                     FROM search_index p
                     LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
                     WHERE ({' OR '.join(conds)})
-                    AND CAST(p.available AS INTEGER) = 1 AND CAST(s.isOpen AS INTEGER) = 1
+                    AND CAST(p.available AS INTEGER) = 1
                     ORDER BY (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) + (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) DESC
                     LIMIT 50
                 """, params)
@@ -212,19 +210,20 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName, vec_distance_cosine(v.embedding, ?) AS distance
+                           s.name as storeName, s.isOpen as storeIsOpen, vec_distance_cosine(v.embedding, ?) AS distance
                     FROM product_vectors v
                     JOIN search_index p ON p.id = v.product_id
-                    LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    WHERE CAST(p.available AS INTEGER) = 1
                     ORDER BY distance ASC
                     LIMIT 20
                 """, (query_vector,))
                 raw_products = [dict(row) for row in c.fetchall()]
-                
+
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName, vec_distance_cosine(v.embedding, ?) AS distance
+                           s.name as storeName, p.isOpen as storeIsOpen, vec_distance_cosine(v.embedding, ?) AS distance
                     FROM store_vectors v
                     JOIN search_index p ON p.id = v.store_id
                     LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
