@@ -593,6 +593,40 @@ def auto_learn_synonyms():
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
+@router.get("/api/admin/section-titles")
+def get_section_titles():
+    """Devuelve, por categoría, los títulos efectivos (manuales + creativos por defecto)."""
+    from routers.home import CATEGORY_TITLES, SECTION_TITLES_OVERRIDE
+    cats = sorted(set(CATEGORY_TITLES) | set(SECTION_TITLES_OVERRIDE))
+    out = {}
+    for c in cats:
+        out[c] = {
+            "manual": SECTION_TITLES_OVERRIDE.get(c, []),
+            "default": CATEGORY_TITLES.get(c, []),
+        }
+    return {"status": "ok", "categories": out}
+
+@router.put("/api/admin/section-titles")
+def update_section_titles(body: dict):
+    """Guarda los títulos manuales por categoría (sin vectores) y recarga en caliente."""
+    from routers.home import SECTION_TITLES_OVERRIDE, load_section_titles
+    try:
+        titles = body.get("titles", {})
+        # Normalizar
+        clean = {}
+        for k, v in titles.items():
+            if isinstance(v, list):
+                arr = [str(t).strip() for t in v if str(t).strip()]
+                if arr:
+                    clean[k.lower()] = arr
+        if core.firebase.db:
+            core.firebase.db.collection('config').document('section_titles').set({"titles": clean}, merge=False)
+        SECTION_TITLES_OVERRIDE.clear()
+        SECTION_TITLES_OVERRIDE.update(clean)
+        return {"status": "ok", "count": len(clean)}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @router.get("/api/admin/ranking-weights")
 def get_ranking_weights():
     from services.context_engine import RANK_WEIGHTS

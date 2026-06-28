@@ -58,6 +58,33 @@ CATEGORY_TITLES = {
 # Plantillas "basadas en gusto" cuando la categoría coincide con tus intereses ({c} en minúscula).
 TASTE_TITLE_TEMPLATES = ["Porque te gusta {c}", "Más de {c} para ti", "Sigue con {c}", "{c} para ti"]
 
+# Títulos manuales por categoría (editables desde el admin, SIN vectores). Se SUMAN al pool creativo.
+SECTION_TITLES_OVERRIDE = {}  # {categoria_lower: [titulos]}
+
+
+def load_section_titles(db):
+    """Carga los títulos manuales por categoría desde Firestore (config/section_titles)."""
+    if not db:
+        return
+    try:
+        doc = db.collection('config').document('section_titles').get()
+        if doc.exists:
+            data = (doc.to_dict() or {}).get('titles') or {}
+            SECTION_TITLES_OVERRIDE.clear()
+            for k, v in data.items():
+                if isinstance(v, list):
+                    clean = [str(t).strip() for t in v if str(t).strip()]
+                    if clean:
+                        SECTION_TITLES_OVERRIDE[k.lower()] = clean
+            print(f"[Títulos] {len(SECTION_TITLES_OVERRIDE)} categorías con títulos manuales cargadas.")
+    except Exception as e:
+        logger.warning(f"[Títulos] No se pudieron cargar: {e}")
+
+
+def titles_for_category(cat_l: str):
+    """Pool combinado: títulos manuales (admin) + creativos por defecto."""
+    return (SECTION_TITLES_OVERRIDE.get(cat_l, []) + CATEGORY_TITLES.get(cat_l, [])) or None
+
 class HomeFeedRequest(BaseModel):
     activities: List[dict] = []
     lat: Optional[float] = None
@@ -418,12 +445,13 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             items = take_interleaved_by_store(cat_groups[cat], 10)
             if len(items) >= 2:
                 cat_l = cat.lower()
+                pool = titles_for_category(cat_l)  # manuales (admin) + creativos, combinados
                 if cat_l in user_interest_cats:
                     title = random.choice(TASTE_TITLE_TEMPLATES).format(c=cat_l)  # basado en gusto
+                elif pool:
+                    title = random.choice(pool)
                 elif anchor_title_map.get(cat_l):
-                    title = random.choice(anchor_title_map[cat_l])               # título de admin
-                elif CATEGORY_TITLES.get(cat_l):
-                    title = random.choice(CATEGORY_TITLES[cat_l])                # pool creativo
+                    title = random.choice(anchor_title_map[cat_l])               # legacy (anclas IA)
                 else:
                     title = cat                                                  # último recurso
                 feed_sections.append({
