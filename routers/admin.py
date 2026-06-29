@@ -595,11 +595,20 @@ def auto_learn_synonyms():
 
 @router.get("/api/admin/section-titles")
 def get_section_titles():
-    """Devuelve, por categoría, los títulos efectivos (manuales + creativos por defecto)."""
+    """Devuelve, por categoría, los títulos efectivos (manuales + creativos por defecto).
+    Incluye las categorías REALES de comercios del índice → las dinámicas nuevas también aparecen."""
     from routers.home import CATEGORY_TITLES, SECTION_TITLES_OVERRIDE
-    cats = sorted(set(CATEGORY_TITLES) | set(SECTION_TITLES_OVERRIDE))
+    cats = set(CATEGORY_TITLES) | set(SECTION_TITLES_OVERRIDE)
+    try:
+        conn = get_db_connection()
+        for r in conn.execute("SELECT DISTINCT category FROM search_index WHERE type='store'").fetchall():
+            if r["category"] and r["category"].strip():
+                cats.add(r["category"].strip().lower())
+        conn.close()
+    except Exception:
+        pass
     out = {}
-    for c in cats:
+    for c in sorted(cats):
         out[c] = {
             "manual": SECTION_TITLES_OVERRIDE.get(c, []),
             "default": CATEGORY_TITLES.get(c, []),

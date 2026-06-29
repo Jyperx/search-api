@@ -28,19 +28,35 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
     c = conn.cursor()
 
     if not q.strip() and category:
-        # Búsqueda pura por categoría (Filtro de Pestañas FrontEnd)
+        # Búsqueda pura por categoría (Filtro de pestañas del buscador).
+        # Match por la categoría del COMERCIO (app) o la del producto. (FIX: s.category
+        # debe venir en el subquery del JOIN; antes daba error SQL.)
         c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                    p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                   s.name as storeName
+                   s.name as storeName, s.isOpen as storeIsOpen, s.category as storeCategory
             FROM search_index p
-            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-            WHERE p.category = ? OR s.category = ?
+            LEFT JOIN (SELECT id, name, isOpen, category FROM search_index WHERE type='store') s ON s.id = p.storeId
+            WHERE p.type = 'product' AND (s.category = ? OR p.category = ?)
+            AND CAST(p.available AS INTEGER) = 1
             ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC
             LIMIT 50
         """, (category, category))
-        rows = c.fetchall()
-        return {"results": [dict(row) for row in rows]}
+        prod_rows = [dict(row) for row in c.fetchall()]
+
+        # También las tiendas de esa categoría (para la sección de comercios)
+        c.execute("""
+            SELECT id, type, storeId, name, category, description,
+                   price, icon, imageUrl, onSale, salePrice, likes, views, purchases,
+                   name as storeName, isOpen as storeIsOpen
+            FROM search_index
+            WHERE type = 'store' AND category = ?
+            ORDER BY CAST(likes AS INTEGER) DESC
+            LIMIT 30
+        """, (category,))
+        store_rows = [dict(row) for row in c.fetchall()]
+
+        return {"results": store_rows + prod_rows, "exact_match": True}
 
     if not q.strip():
         return {"results": []}
@@ -76,9 +92,9 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
         c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                    p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                   s.name as storeName, s.isOpen as storeIsOpen
+                   s.name as storeName, s.isOpen as storeIsOpen, s.category as storeCategory
             FROM search_index p
-            LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+            LEFT JOIN (SELECT id, name, isOpen, category FROM search_index WHERE type='store') s ON s.id = p.storeId
             WHERE search_index MATCH ?
             AND CAST(p.available AS INTEGER) = 1
             ORDER BY
@@ -101,9 +117,9 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
             c.execute("""
                 SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                        p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                       s.name as storeName, s.isOpen as storeIsOpen
+                       s.name as storeName, s.isOpen as storeIsOpen, s.category as storeCategory
                 FROM search_index p
-                LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+                LEFT JOIN (SELECT id, name, isOpen, category FROM search_index WHERE type='store') s ON s.id = p.storeId
                 WHERE (p.name LIKE ? OR p.category LIKE ? OR p.description LIKE ?)
                 AND CAST(p.available AS INTEGER) = 1
                 ORDER BY
@@ -150,9 +166,9 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                 c.execute(f"""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName, s.isOpen as storeIsOpen
+                           s.name as storeName, s.isOpen as storeIsOpen, s.category as storeCategory
                     FROM search_index p
-                    LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    LEFT JOIN (SELECT id, name, isOpen, category FROM search_index WHERE type='store') s ON s.id = p.storeId
                     WHERE ({' OR '.join(conds)})
                     AND CAST(p.available AS INTEGER) = 1
                     ORDER BY (COALESCE(CAST(p.likes AS REAL), 0) * 10.0) + (COALESCE(CAST(p.purchases AS REAL), 0) * 15.0) DESC
@@ -210,10 +226,10 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName, s.isOpen as storeIsOpen, vec_distance_cosine(v.embedding, ?) AS distance
+                           s.name as storeName, s.isOpen as storeIsOpen, s.category as storeCategory, vec_distance_cosine(v.embedding, ?) AS distance
                     FROM product_vectors v
                     JOIN search_index p ON p.id = v.product_id
-                    LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    LEFT JOIN (SELECT id, name, isOpen, category FROM search_index WHERE type='store') s ON s.id = p.storeId
                     WHERE CAST(p.available AS INTEGER) = 1
                     ORDER BY distance ASC
                     LIMIT 20

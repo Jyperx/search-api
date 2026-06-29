@@ -168,12 +168,16 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 cats_lower = [c2.strip().lower() for c2 in req.preferred_categories if c2]
                 if cats_lower:
                     ph = ",".join(["?"] * len(cats_lower))
+                    # Match por la categoría del COMERCIO (la del onboarding es de la app),
+                    # con respaldo a la categoría del producto.
                     rows_cs = c.execute(f"""
                         SELECT pv.embedding FROM product_vectors pv
                         JOIN search_index s ON s.id = pv.product_id AND s.type = 'product'
-                        WHERE LOWER(s.category) IN ({ph}) AND CAST(s.available AS INTEGER) = 1
+                        LEFT JOIN search_index st ON st.id = s.storeId AND st.type = 'store'
+                        WHERE (LOWER(st.category) IN ({ph}) OR LOWER(s.category) IN ({ph}))
+                        AND CAST(s.available AS INTEGER) = 1
                         LIMIT 80
-                    """, tuple(cats_lower)).fetchall()
+                    """, tuple(cats_lower) + tuple(cats_lower)).fetchall()
                     if rows_cs:
                         acc = np.zeros(768, dtype=np.float32)
                         for r_cs in rows_cs:
@@ -263,7 +267,8 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
 
         def add_proximity(row):
             """Suma boost por cercanía + cold-start de gustos + afinidad de tienda al final_score."""
-            if pref_set and str(row.get("category", "")).lower() in pref_set:
+            row_cat = str(row.get("store_category") or row.get("category") or "").lower()
+            if pref_set and row_cat in pref_set:
                 row["final_score"] = row.get("final_score", 0) + 0.4  # empuje de gustos declarados
             visits = store_visits.get(row.get("storeId"))
             if visits:
@@ -327,10 +332,10 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 SELECT p.product_id, p.embedding, vec_distance_cosine(p.embedding, ?) AS distance,
                        s.id, s.type, s.storeId, s.name, s.category, s.description,
                        s.price, s.icon, s.imageUrl, s.onSale, s.salePrice, s.likes, s.views, s.purchases,
-                       st.name as storeName
+                       st.name as storeName, st.category as store_category
                 FROM product_vectors p
                 JOIN search_index s ON p.product_id = s.id AND s.type = 'product'
-                LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') st ON st.id = s.storeId
+                LEFT JOIN (SELECT id, name, isOpen, category FROM search_index WHERE type='store') st ON st.id = s.storeId
                 WHERE CAST(s.available AS INTEGER) = 1 AND CAST(st.isOpen AS INTEGER) = 1
                 ORDER BY distance ASC
                 LIMIT 200
@@ -345,9 +350,9 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             c.execute("""
                 SELECT s.id, s.type, s.storeId, s.name, s.category, s.description,
                        s.price, s.icon, s.imageUrl, s.onSale, s.salePrice, s.likes, s.views, s.purchases,
-                       st.name as storeName
+                       st.name as storeName, st.category as store_category
                 FROM search_index s
-                LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') st ON st.id = s.storeId
+                LEFT JOIN (SELECT id, name, isOpen, category FROM search_index WHERE type='store') st ON st.id = s.storeId
                 WHERE s.type = 'product' AND CAST(s.available AS INTEGER) = 1 AND CAST(st.isOpen AS INTEGER) = 1
                 ORDER BY CAST(s.purchases AS INTEGER) DESC, CAST(s.likes AS INTEGER) DESC
                 LIMIT 200
@@ -459,11 +464,13 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         except Exception as e:
             logger.error(f"[Anchor Titles] Error: {e}")
 
+        # Agrupamos por la categoría del COMERCIO (app: Restaurante, Comidas rápidas...),
+        # no por la del producto (texto libre tipo "Tacos") → filas limpias y consistentes.
         cat_groups = defaultdict(list)
         for r in pool:
             if r["id"] in global_seen_ids:
                 continue
-            cat = r.get("category") or "general"
+            cat = r.get("store_category") or r.get("category") or "general"
             cat_groups[cat].append(r)
 
         ordered_cats = sorted(cat_groups.keys(), key=lambda cat: cat_groups[cat][0]["final_score"], reverse=True)
