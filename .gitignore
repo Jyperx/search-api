@@ -1,6 +1,25 @@
+# Entorno / secretos
 .env
+serviceAccountKey.json
+
+# Bases de datos locales
 *.db
 *.sqlite
-serviceAccountKey.json
+
+# Python
 __pycache__/
 *.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Node — este backend es Python; no debería existir nada de Node aquí.
+# (Si aparece, casi seguro fue un `npm install` en la carpeta equivocada.)
+node_modules/
+package.json
+package-lock.json
+
+# OS
+.DS_Store
+Thumbs.db
