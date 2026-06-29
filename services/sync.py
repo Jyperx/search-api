@@ -152,6 +152,8 @@ def do_sync_database():
             s_id = store.id
             s_name = s_data.get('name', '')
             s_cat = s_data.get('category', '')
+            s_desc = s_data.get('description', '')
+            s_img = s_data.get('logoUrl') or s_data.get('image') or ''  # el comercio usa logoUrl
             is_open = int(bool(s_data.get('isOpen', True))) # FIX B1
             
             products = list(core.firebase.db.collection('stores').document(s_id).collection('products').stream())
@@ -166,8 +168,8 @@ def do_sync_database():
                          likes, views, purchases, available, isOpen)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    s_id, 'store', s_id, s_name, s_cat, '',
-                    '0', '', '', 0, '', 0, 0, 0, 1, is_open
+                    s_id, 'store', s_id, s_name, s_cat, s_desc,
+                    '0', '', s_img, 0, '', 0, 0, 0, 1, is_open
                 ))
                 
                 # Insert products
@@ -187,7 +189,7 @@ def do_sync_database():
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         p_id, 'product', s_id, p_name, p_cat, p_desc,
-                        str(p_data.get('price', '')), '', '',
+                        str(p_data.get('price', '')), p_data.get('icon', ''), p_data.get('imageUrl', ''),
                         1 if p_data.get('onSale') else 0,
                         str(p_data.get('salePrice', '')),
                         p_data.get('likes', 0),
@@ -322,6 +324,8 @@ def do_sync_store(store_id: str):
         s_data = doc.to_dict()
         s_name = s_data.get('name', '')
         s_cat = s_data.get('category', '')
+        s_desc = s_data.get('description', '')
+        s_img = s_data.get('logoUrl') or s_data.get('image') or ''
         is_open = int(bool(s_data.get('isOpen', True)))
         products = list(core.firebase.db.collection('stores').document(store_id).collection('products').stream())
 
@@ -333,18 +337,19 @@ def do_sync_store(store_id: str):
                 INSERT INTO search_index
                     (id, type, storeId, name, category, description, price, icon, imageUrl,
                      onSale, salePrice, likes, views, purchases, available, isOpen)
-                VALUES (?, 'store', ?, ?, ?, '', '0', '', '', 0, '', 0, 0, 0, 1, ?)
-            """, (store_id, store_id, s_name, s_cat, is_open))
+                VALUES (?, 'store', ?, ?, ?, ?, '0', '', ?, 0, '', 0, 0, 0, 1, ?)
+            """, (store_id, store_id, s_name, s_cat, s_desc, s_img, is_open))
             for p in products:
                 p_data = p.to_dict()
                 conn.execute("""
                     INSERT INTO search_index
                         (id, type, storeId, name, category, description, price, icon, imageUrl,
                          onSale, salePrice, likes, views, purchases, available, isOpen)
-                    VALUES (?, 'product', ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, 'product', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     p.id, store_id, p_data.get('name', ''), p_data.get('category', s_cat),
                     p_data.get('description', ''), str(p_data.get('price', '')),
+                    p_data.get('icon', ''), p_data.get('imageUrl', ''),
                     1 if p_data.get('onSale') else 0, str(p_data.get('salePrice', '')),
                     p_data.get('likes', 0), p_data.get('views', 0), p_data.get('purchases', 0),
                     int(bool(p_data.get('available', True))), is_open
