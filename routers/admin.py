@@ -1,6 +1,6 @@
 import json
 import logging
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel
 from typing import List, Optional
 import sqlite_vec
@@ -898,6 +898,92 @@ def index_store_status(store_id: str, isOpen: bool = True):
 @router.get("/api/admin/sync-status")
 def get_sync_status():
     return global_sync_state
+
+
+# Etiquetas amigables para los trabajos automáticos del scheduler
+_JOB_LABELS = {
+    "retry_vectors": ("Reintento de vectores", "Reintenta productos/comercios que fallaron al vectorizar"),
+    "learn_synonyms": ("Aprender sinónimos", "Aprende sinónimos a partir de los clics de búsqueda"),
+    "learn_clusters": ("Aprender clusters", "Detecta palabras clave por categoría (TF-IDF)"),
+    "tune_weights": ("Ajustar pesos del ranking", "Re-equilibra el peso de cada señal según el CTR"),
+    "reconcile_catalog": ("Anti-fantasmas", "Elimina del índice productos/comercios que ya no existen"),
+}
+
+
+@router.get("/api/status")
+def get_system_status(request: Request):
+    """Estado de salud completo del backend para la pestaña Sistema del admin."""
+    out = {
+        "status": "ok",
+        "firebase_connected": core.firebase.db is not None,
+    }
+
+    # --- Catálogo y cerebro (conteos desde SQLite) ---
+    def _count(conn, sql):
+        try:
+            return conn.execute(sql).fetchone()[0]
+        except Exception:
+            return 0
+
+    try:
+        conn = get_db_connection()
+        out["catalog"] = {
+            "products_indexed": _count(conn, "SELECT COUNT(*) FROM search_index WHERE type='product'"),
+            "products_vectorized": _count(conn, "SELECT COUNT(*) FROM product_vectors"),
+            "stores_indexed": _count(conn, "SELECT COUNT(*) FROM search_index WHERE type='store'"),
+            "stores_vectorized": _count(conn, "SELECT COUNT(*) FROM store_vectors"),
+            "vector_queue": _count(conn, "SELECT COUNT(*) FROM vector_queue"),
+        }
+        out["brain"] = {
+            "concepts": _count(conn, "SELECT COUNT(*) FROM concept_vectors"),
+            "users_with_vector": _count(conn, "SELECT COUNT(*) FROM user_vectors"),
+            "tracked_items": _count(conn, "SELECT COUNT(*) FROM item_stats"),
+            "tracked_sections": _count(conn, "SELECT COUNT(*) FROM section_stats"),
+            "store_locations": _count(conn, "SELECT COUNT(*) FROM store_locations"),
+        }
+        conn.close()
+    except Exception as e:
+        out["status"] = "degraded"
+        out["db_error"] = str(e)
+
+    # Conteos en memoria (sinónimos / clusters cargados)
+    try:
+        from data.synonyms import SYNONYMS
+        from data.clusters import MACRO_CLUSTERS_CACHE
+        out["brain"]["synonym_groups"] = len(SYNONYMS)
+        out["brain"]["clusters"] = len(MACRO_CLUSTERS_CACHE)
+    except Exception:
+        pass
+
+    # --- Estado de sincronización ---
+    out["sync"] = {
+        "is_syncing": global_sync_state.get("is_syncing", False),
+        "status": global_sync_state.get("status", "idle"),
+        "completed": global_sync_state.get("completed_products", 0),
+        "total": global_sync_state.get("total_products", 0),
+    }
+
+    # --- Scheduler (trabajos automáticos) ---
+    jobs = []
+    scheduler_running = False
+    try:
+        sched = getattr(request.app.state, "scheduler", None)
+        if sched is not None:
+            scheduler_running = bool(getattr(sched, "running", False))
+            for j in sched.get_jobs():
+                label, desc = _JOB_LABELS.get(j.id, (j.id, ""))
+                jobs.append({
+                    "id": j.id,
+                    "label": label,
+                    "description": desc,
+                    "next_run": j.next_run_time.isoformat() if j.next_run_time else None,
+                })
+    except Exception:
+        pass
+    out["scheduler_running"] = scheduler_running
+    out["jobs"] = jobs
+
+    return out
 
 DEMO_STORES = [
     ("Restaurante", "Sazón de la Abuela", ["Bandeja Paisa", "Sancocho de Gallina", "Churrasco", "Mojarra Frita", "Ajiaco Santafereño", "Pechuga Gratinada", "Sopa de Costilla", "Arroz con Pollo", "Cazuela de Mariscos", "Lomo al Trapo"]),
