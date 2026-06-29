@@ -164,7 +164,7 @@ def do_sync_database():
                         (id, type, storeId, name, category, description,
                          price, icon, imageUrl, onSale, salePrice,
                          likes, views, purchases, available, isOpen)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     s_id, 'store', s_id, s_name, s_cat, '',
                     '0', '', '', 0, '', 0, 0, 0, 1, is_open
@@ -184,7 +184,7 @@ def do_sync_database():
                             (id, type, storeId, name, category, description,
                              price, icon, imageUrl, onSale, salePrice,
                              likes, views, purchases, available, isOpen)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         p_id, 'product', s_id, p_name, p_cat, p_desc,
                         str(p_data.get('price', '')), '', '',
