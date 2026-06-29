@@ -57,6 +57,21 @@ def load_ranking_weights(db):
         print(f"[Ranking] No se pudieron cargar pesos: {e}")
 
 
+def save_ranking_weights(db, new_weights: dict) -> dict:
+    """Guarda pesos editados manualmente: valida tipos, aplica topes de seguridad y persiste.
+    Devuelve el diccionario final de pesos."""
+    for k, v in (new_weights or {}).items():
+        if k in RANK_WEIGHTS and isinstance(v, (int, float)):
+            RANK_WEIGHTS[k] = float(_clamp_bounds(k, float(v)))
+    if db:
+        try:
+            db.collection('config').document('ranking').set({"weights": RANK_WEIGHTS}, merge=True)
+        except Exception as e:
+            logger.error(f"[Ranking] Error guardando pesos manuales: {e}")
+    print(f"[Ranking] Pesos guardados manualmente: {RANK_WEIGHTS}")
+    return dict(RANK_WEIGHTS)
+
+
 def tune_ranking_weights(db):
     """Auto-ajuste de pesos GLOBALES desde el engagement real (CTR por producto).
     Suavizado (mueve 25% hacia el objetivo) y con topes → estable, sin sobresaltos."""

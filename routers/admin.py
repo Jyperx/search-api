@@ -538,8 +538,9 @@ def reset_vectors_db():
             c.execute("DROP TABLE IF EXISTS store_vectors")
             c.execute("DROP TABLE IF EXISTS anchor_vectors")
             c.execute("DELETE FROM anchor_metadata")
-            # Limpiezas que faltaban (por eso el contador "sin vectorizar" se quedaba pegado):
-            for tbl in ("vector_queue", "item_stats", "store_locations"):
+            # Reset TOTAL del catálogo: vectores, cola, stats, ubicaciones e índice de búsqueda.
+            # (Antes dejaba search_index, así que el catálogo seguía apareciendo sin imágenes/vectores.)
+            for tbl in ("vector_queue", "item_stats", "store_locations", "search_index"):
                 try:
                     c.execute(f"DELETE FROM {tbl}")
                 except Exception:
@@ -638,8 +639,21 @@ def update_section_titles(body: dict):
 
 @router.get("/api/admin/ranking-weights")
 def get_ranking_weights():
-    from services.context_engine import RANK_WEIGHTS
-    return {"status": "ok", "weights": RANK_WEIGHTS}
+    from services.context_engine import RANK_WEIGHTS, _WEIGHT_BOUNDS
+    return {"status": "ok", "weights": RANK_WEIGHTS, "bounds": _WEIGHT_BOUNDS}
+
+class RankingWeightsPayload(BaseModel):
+    weights: dict
+
+@router.put("/api/admin/ranking-weights")
+def put_ranking_weights(payload: RankingWeightsPayload):
+    """Guarda pesos del ranking editados a mano (valida y aplica topes de seguridad)."""
+    from services.context_engine import save_ranking_weights
+    try:
+        updated = save_ranking_weights(core.firebase.db, payload.weights or {})
+        return {"status": "ok", "weights": updated}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @router.post("/api/admin/tune-weights")
 def tune_weights_now():
@@ -647,6 +661,37 @@ def tune_weights_now():
     from services.context_engine import tune_ranking_weights
     try:
         return tune_ranking_weights(core.firebase.db)
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.post("/api/admin/retry-vectors")
+def retry_vectors_now():
+    """Reintenta vectorizar lo que quedó en la cola (normalmente corre cada 10 min)."""
+    from services.sync import retry_vector_queue_task
+    try:
+        retry_vector_queue_task()
+        return {"status": "ok", "message": "Reintento de vectores lanzado en segundo plano."}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.post("/api/admin/reset-users-activity")
+def reset_users_activity():
+    """Borra el comportamiento de TODOS los usuarios: actividad, vectores de gusto,
+    stats de secciones/productos e historial de búsquedas. No toca el catálogo."""
+    cleared = {}
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            for tbl in ("user_activity_cache", "user_vectors", "section_stats", "item_stats", "search_logs"):
+                try:
+                    cur = conn.execute(f"DELETE FROM {tbl}")
+                    cleared[tbl] = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+                except Exception:
+                    cleared[tbl] = 0
+            conn.commit()
+            conn.close()
+        total = sum(v for v in cleared.values() if isinstance(v, int))
+        return {"status": "ok", "message": f"Historial de usuarios limpiado ({total} registros).", "cleared": cleared}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -836,6 +881,7 @@ def webhook_product_delete(product_id: str):
             conn.execute("DELETE FROM search_index WHERE id = ? AND type = 'product'", (product_id,))
             conn.execute("DELETE FROM product_vectors WHERE product_id = ?", (product_id,))
             conn.execute("DELETE FROM vector_queue WHERE product_id = ?", (product_id,))
+            conn.execute("DELETE FROM item_stats WHERE product_id = ?", (product_id,))
             conn.commit()
             conn.close()
         return {"status": "ok"}
