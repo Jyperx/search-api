@@ -8,7 +8,7 @@ from core.database import get_db_connection, sqlite_lock
 from core.config import global_sync_state
 import core.firebase
 from core.genai_client import embed_text
-from services.embeddings import generate_product_embedding
+from services.embeddings import generate_product_embedding, generate_product_embeddings_batch
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ def _report_vector_progress():
         else:
             global_sync_state["status"] = f"Vectorizando {done}/{total}..."
 
-vector_worker_pool = ThreadPoolExecutor(max_workers=3)
+vector_worker_pool = ThreadPoolExecutor(max_workers=6)
 
 
 def index_store_location(store_id: str, location):
@@ -108,6 +108,39 @@ def async_index_product_vector(product_id: str, name: str, category: str, descri
     finally:
         _report_vector_progress()  # garantiza que la barra avance aunque falle el embedding
 
+
+def index_products_batch(items):
+    """Worker de LOTE: vectoriza una tanda de productos con una sola llamada a Gemini y los guarda.
+    items = [(product_id, name, category, description), ...].
+    Lo que falla cae a vector_queue y lo reintenta el path normal (con enriquecimiento completo)."""
+    try:
+        # El embed (lento) ocurre FUERA del lock; los inserts (rápidos) van dentro.
+        results = generate_product_embeddings_batch(items)
+        with sqlite_lock:
+            conn = get_db_connection()
+            for (pid, blob, source), item in zip(results, items):
+                try:
+                    if blob:
+                        conn.execute("DELETE FROM product_vectors WHERE product_id = ?", (pid,))
+                        conn.execute("INSERT INTO product_vectors (product_id, embedding) VALUES (?, ?)", (pid, blob))
+                        conn.execute("DELETE FROM vector_queue WHERE product_id = ?", (pid,))
+                    else:
+                        conn.execute(
+                            "INSERT OR REPLACE INTO vector_queue (product_id, name, category, description, attempts, last_attempt, source_hint) "
+                            "VALUES (?, ?, ?, ?, ?, datetime('now'), ?)",
+                            (pid, item[1], item[2], item[3], 1, source)
+                        )
+                except Exception as e:
+                    logger.error(f"[Batch] Error guardando {pid}: {e}")
+            conn.commit()
+            conn.close()
+    except Exception as e:
+        logger.error(f"[Batch] Error en el lote de {len(items)} productos: {e}")
+    finally:
+        for _ in items:
+            _report_vector_progress()  # avanza la barra por cada producto del lote
+
+
 def do_sync_database():
     """Sincronización masiva de Firestore a SQLite (FTS5 + Vectores)"""
     global vector_worker_pool
@@ -128,7 +161,7 @@ def do_sync_database():
 
     # FIX B2: Cancelar workers anteriores
     vector_worker_pool.shutdown(wait=False, cancel_futures=True)
-    vector_worker_pool = ThreadPoolExecutor(max_workers=3)
+    vector_worker_pool = ThreadPoolExecutor(max_workers=6)
     
     # FIX B2: Swap atómico con tabla temporal
     with sqlite_lock:
@@ -236,8 +269,12 @@ def do_sync_database():
             global_sync_state["status"] = "Sin productos para vectorizar"
         else:
             global_sync_state["status"] = f"Vectorizando 0/{total}..."
-            for args in embed_args:
-                vector_worker_pool.submit(async_index_product_vector, *args)
+            # Vectorización en LOTES: cada tanda = 1 sola llamada a Gemini (mucho más rápido).
+            # Los lotes se reparten entre los workers del pool.
+            BATCH_SIZE = 50
+            for i in range(0, total, BATCH_SIZE):
+                chunk = embed_args[i:i + BATCH_SIZE]
+                vector_worker_pool.submit(index_products_batch, chunk)
             # is_syncing queda True; los workers la apagan al llegar a total
 
     except Exception as e:

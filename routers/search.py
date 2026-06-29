@@ -5,10 +5,18 @@ import math
 import random
 import struct
 import sqlite_vec
+from functools import lru_cache
 
 from core.database import get_db_dep, sqlite_lock
 import core.firebase
 from core.genai_client import embed_text
+
+
+@lru_cache(maxsize=512)
+def _embed_query_cached(q: str) -> tuple:
+    """Embebe una query de búsqueda con caché LRU: la misma palabra no se re-embebe en Gemini.
+    Devuelve una tupla (inmutable) para que sea cacheable de forma segura."""
+    return tuple(embed_text(q, task_type="retrieval_query"))
 from data.clusters import MACRO_CLUSTERS_CACHE
 from data.synonyms import REVERSE_SYNONYMS, SYNONYMS
 from services.recommender import calculate_user_vector
@@ -183,8 +191,8 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
             query_vector = None
             for attempt in range(2):
                 try:
-                    raw_query_vector = embed_text(safe_q, task_type="retrieval_query")
-                    
+                    raw_query_vector = list(_embed_query_cached(safe_q))
+
                     # Interpolar con el Perfil del Usuario
                     if history:
                         try:

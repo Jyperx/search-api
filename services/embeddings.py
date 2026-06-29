@@ -4,11 +4,11 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import sqlite_vec
 from core.config import LLM_MODEL
-from core.genai_client import embed_text, generate_text
+from core.genai_client import embed_text, embed_texts, generate_text
 from data.concepts import CATEGORY_WEIGHTS, DICCIONARIO_CONCEPTOS
 
 logger = logging.getLogger(__name__)
-_embed_executor = ThreadPoolExecutor(max_workers=3)
+_embed_executor = ThreadPoolExecutor(max_workers=6)
 
 def _serialize(vector: np.ndarray) -> bytes:
     return sqlite_vec.serialize_float32(vector.tolist())
@@ -82,3 +82,50 @@ async def generate_product_embedding(name: str, category: str, description: str)
         return _serialize(vector_enriched), 'flash_lite_enrichment'
 
     return _serialize(vector_base), 'raw_only'
+
+
+def _anchor_vector(vector_base: np.ndarray, category: str):
+    """Aplica anclaje a concepto si corresponde. Devuelve (bytes, source). Sin LLM."""
+    cat_key = (category or '').lower().strip()
+    anchor_weight = CATEGORY_WEIGHTS.get(cat_key, CATEGORY_WEIGHTS["default"])
+    if anchor_weight == 0.0 or not DICCIONARIO_CONCEPTOS:
+        return _serialize(vector_base), 'raw_only'
+    best_sim, best_anchor_id = _find_closest_concept(vector_base)
+    if best_sim >= 0.62:
+        anchor_vec = DICCIONARIO_CONCEPTOS[best_anchor_id]
+        vector_final = (vector_base * (1 - anchor_weight)) + (anchor_vec * anchor_weight)
+        vector_final = vector_final / np.linalg.norm(vector_final)
+        return _serialize(vector_final), 'concept_anchoring'
+    # En batch NO llamamos al LLM (esa rama queda para el path de crear/editar 1 producto).
+    return _serialize(vector_base), 'raw_only'
+
+
+def generate_product_embeddings_batch(items: list) -> list:
+    """Vectoriza una TANDA de productos con UNA sola llamada de embeddings (raw en lote) + anclaje a
+    concepto por producto. Mucho más rápido para sync masivo. Omite el enriquecimiento Flash-Lite.
+
+    items: lista de (product_id, name, category, description).
+    Devuelve: lista de (product_id, bytes|None, source).
+    """
+    if not items:
+        return []
+    raw_texts = [f"Producto: {n}. Categoría: {c}. Descripción: {d}" for (_id, n, c, d) in items]
+    try:
+        raw_vectors = embed_texts(raw_texts, task_type="retrieval_document")
+    except Exception as e:
+        logger.warning(f"[Batch] Falló el embed en lote ({len(items)} items): {e}")
+        return [(it[0], None, 'error') for it in items]
+
+    out = []
+    for item, raw in zip(items, raw_vectors):
+        pid, _name, category, _desc = item
+        try:
+            v = np.array(raw, dtype=np.float32)
+            norm = np.linalg.norm(v)
+            vector_base = v / norm if norm > 0 else v
+            blob, source = _anchor_vector(vector_base, category)
+            out.append((pid, blob, source))
+        except Exception as e:
+            logger.warning(f"[Batch] Error procesando {pid}: {e}")
+            out.append((pid, None, 'error'))
+    return out
