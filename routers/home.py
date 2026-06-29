@@ -157,6 +157,34 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             if user_vector:
                 user_vec_np = np.frombuffer(user_vector, dtype=np.float32)
 
+        # ¿Arranque en frío? = aún no hay gusto por comportamiento
+        cold_start = user_vec_np is None
+
+        # 1.05 Cold-start: construir un VECTOR inicial desde los gustos del onboarding,
+        # promediando productos reales de esas categorías → feed personalizado desde el registro.
+        if cold_start and req.preferred_categories:
+            try:
+                import sqlite_vec as _sv
+                cats_lower = [c2.strip().lower() for c2 in req.preferred_categories if c2]
+                if cats_lower:
+                    ph = ",".join(["?"] * len(cats_lower))
+                    rows_cs = c.execute(f"""
+                        SELECT pv.embedding FROM product_vectors pv
+                        JOIN search_index s ON s.id = pv.product_id AND s.type = 'product'
+                        WHERE LOWER(s.category) IN ({ph}) AND CAST(s.available AS INTEGER) = 1
+                        LIMIT 80
+                    """, tuple(cats_lower)).fetchall()
+                    if rows_cs:
+                        acc = np.zeros(768, dtype=np.float32)
+                        for r_cs in rows_cs:
+                            acc += np.frombuffer(r_cs["embedding"], dtype=np.float32)
+                        nrm = np.linalg.norm(acc)
+                        if nrm > 0:
+                            user_vec_np = acc / nrm
+                            user_vector = _sv.serialize_float32(user_vec_np.tolist())
+            except Exception as e:
+                logger.warning(f"[Cold-start] No se pudo construir vector de gustos: {e}")
+
         # 1.1 Simulador admin: convertir el prompt de gusto en vector de usuario
         if req.sim_prompt and user_vec_np is None:
             try:
@@ -213,9 +241,10 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
         except Exception as e:
             logger.warning(f"[ItemStats] Error: {e}")
 
-        # Cold-start: si el usuario no tiene gusto aún, empujamos sus categorías del onboarding.
+        # Cold-start: además del vector inicial, empujamos las categorías del onboarding
+        # (solo mientras no haya comportamiento real; luego el gusto real manda).
         pref_set = set()
-        if user_vector is None and req.preferred_categories:
+        if cold_start and req.preferred_categories:
             pref_set = {c.strip().lower() for c in req.preferred_categories if c}
 
         # Afinidad de tienda: cuántas veces visitó cada comercio (de la actividad reciente)
