@@ -46,14 +46,19 @@ def embed_text(text: str, task_type: Optional[str] = None, model: Optional[str] 
 
 
 def embed_texts(texts: List[str], task_type: Optional[str] = None, model: Optional[str] = None) -> List[list]:
-    """Embebe VARIOS textos en UNA sola llamada (batch). Devuelve una lista de vectores (768 dims),
-    alineada 1:1 con `texts`. Mucho más eficiente para vectorización masiva."""
+    """Embebe VARIOS textos en UNA sola llamada (batchEmbedContents). Devuelve una lista de
+    vectores (768 dims), alineada 1:1 con `texts`.
+
+    IMPORTANTE: con gemini-embedding-2, pasar una lista de STRINGS planos los FUSIONA en un solo
+    vector. Para obtener un embedding por texto hay que enviar cada uno como un Content separado;
+    así el SDK usa batchEmbedContents y devuelve N embeddings."""
     if not texts:
         return []
     config = types.EmbedContentConfig(task_type=task_type.upper()) if task_type else None
+    contents = [types.Content(parts=[types.Part(text=t)]) for t in texts]
     res = _with_retry(lambda: client.models.embed_content(
         model=model or EMBEDDING_MODEL,
-        contents=texts,
+        contents=contents,
         config=config,
     ))
     return [list(e.values)[:768] for e in res.embeddings]
