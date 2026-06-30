@@ -118,22 +118,27 @@ def index_products_batch(items):
         results = generate_product_embeddings_batch(items)
         with sqlite_lock:
             conn = get_db_connection()
-            for (pid, blob, source), item in zip(results, items):
-                try:
-                    if blob:
-                        conn.execute("DELETE FROM product_vectors WHERE product_id = ?", (pid,))
-                        conn.execute("INSERT INTO product_vectors (product_id, embedding) VALUES (?, ?)", (pid, blob))
-                        conn.execute("DELETE FROM vector_queue WHERE product_id = ?", (pid,))
-                    else:
-                        conn.execute(
-                            "INSERT OR REPLACE INTO vector_queue (product_id, name, category, description, attempts, last_attempt, source_hint) "
-                            "VALUES (?, ?, ?, ?, ?, datetime('now'), ?)",
-                            (pid, item[1], item[2], item[3], 1, source)
-                        )
-                except Exception as e:
-                    logger.error(f"[Batch] Error guardando {pid}: {e}")
-            conn.commit()
-            conn.close()
+            try:
+                for res, item in zip(results, items):
+                    if not res:   # defensa: nunca debería pasar, pero no crasheamos
+                        continue
+                    pid, blob, source = res
+                    try:
+                        if blob:
+                            conn.execute("DELETE FROM product_vectors WHERE product_id = ?", (pid,))
+                            conn.execute("INSERT INTO product_vectors (product_id, embedding) VALUES (?, ?)", (pid, blob))
+                            conn.execute("DELETE FROM vector_queue WHERE product_id = ?", (pid,))
+                        else:
+                            conn.execute(
+                                "INSERT OR REPLACE INTO vector_queue (product_id, name, category, description, attempts, last_attempt, source_hint) "
+                                "VALUES (?, ?, ?, ?, ?, datetime('now'), ?)",
+                                (pid, item[1], item[2], item[3], 1, source)
+                            )
+                    except Exception as e:
+                        logger.error(f"[Batch] Error guardando {pid}: {e}")
+                conn.commit()
+            finally:
+                conn.close()  # SIEMPRE cierra (evita conexiones colgadas → 'database is locked')
     except Exception as e:
         logger.error(f"[Batch] Error en el lote de {len(items)} productos: {e}")
     finally:

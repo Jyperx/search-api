@@ -100,26 +100,34 @@ def _llm_intent(name: str, category: str, description: str) -> str:
         return ""
 
 
-def generate_product_embeddings_batch(items: list) -> list:
-    """Vectoriza una TANDA de productos con la MISMA calidad que el path de a-uno, pero eficiente:
-      - 1 sola llamada de embeddings para los textos base (en vez de N).
-      - Anclaje a concepto para los que encajan (sin llamadas extra).
-      - Para los que NO encajan: enriquecimiento LLM (en paralelo) + 1 sola llamada de embeddings
-        para los textos enriquecidos.
-    (Sin task_type, igual que generate_product_embedding, para que el espacio vectorial sea idéntico.)
+# Se desactiva solo si el modelo de embeddings demuestra que NO soporta lote (devuelve un número
+# de vectores distinto al de textos enviados). A partir de ahí vectorizamos uno-por-uno.
+_batch_supported = True
 
-    items: lista de (product_id, name, category, description).
-    Devuelve: lista de (product_id, bytes|None, source), alineada con items.
-    """
-    if not items:
-        return []
-    raw_texts = [f"Producto: {n}. Categoría: {c}. Descripción: {d}" for (_id, n, c, d) in items]
+
+def _embed_items_one_by_one(items: list) -> list:
+    """Fallback: cada producto por el path completo de a-uno (raw + anclaje + LLM). Calidad idéntica."""
+    out = []
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     try:
-        raw_vectors = embed_texts(raw_texts)
-    except Exception as e:
-        logger.warning(f"[Batch] Falló el embed base en lote ({len(items)} items): {e}")
-        return [(it[0], None, 'error') for it in items]
+        for (pid, name, category, description) in items:
+            try:
+                blob, source = loop.run_until_complete(
+                    generate_product_embedding(name, category, description)
+                )
+                out.append((pid, blob, source))
+            except Exception as e:
+                logger.warning(f"[Single] Error vectorizando {pid}: {e}")
+                out.append((pid, None, 'error'))
+    finally:
+        loop.close()
+    return out
 
+
+def _process_batch_vectors(items: list, raw_vectors: list) -> list:
+    """Procesa los vectores base de un lote: anclaje a concepto + enriquecimiento LLM para los débiles.
+    Garantiza una lista alineada 1:1 con items (ningún slot queda en None)."""
     results: list = [None] * len(items)
     weak: list = []  # (idx, item, vector_base) → no anclaron, necesitan enriquecimiento LLM
 
@@ -148,7 +156,6 @@ def generate_product_embeddings_batch(items: list) -> list:
             logger.warning(f"[Batch] Error procesando {pid}: {e}")
             results[idx] = (pid, None, 'error')
 
-    # Los que no anclaron: LLM en paralelo (palabras de contexto) → re-embed en lote
     if weak:
         intents = list(_embed_executor.map(lambda w: _llm_intent(w[1][1], w[1][2], w[1][3]), weak))
         enriched_texts = [
@@ -157,6 +164,8 @@ def generate_product_embeddings_batch(items: list) -> list:
         ]
         try:
             enriched_vectors = embed_texts(enriched_texts)
+            if len(enriched_vectors) != len(weak):
+                enriched_vectors = [None] * len(weak)
         except Exception as e:
             logger.warning(f"[Batch] Falló el embed enriquecido en lote: {e}")
             enriched_vectors = [None] * len(weak)
@@ -171,4 +180,35 @@ def generate_product_embeddings_batch(items: list) -> list:
             else:
                 results[idx] = (pid, _serialize(vb), 'raw_only')
 
+    # Defensa: ningún slot debe quedar en None.
+    for idx in range(len(items)):
+        if results[idx] is None:
+            results[idx] = (items[idx][0], None, 'error')
     return results
+
+
+def generate_product_embeddings_batch(items: list) -> list:
+    """Vectoriza una TANDA de productos. Intenta en lote (1 llamada de embeddings); si el modelo
+    NO soporta lote (devuelve un conteo distinto), cae automáticamente a uno-por-uno con calidad
+    idéntica. Devuelve lista de (product_id, bytes|None, source) alineada con items."""
+    global _batch_supported
+    if not items:
+        return []
+
+    if _batch_supported:
+        raw_texts = [f"Producto: {n}. Categoría: {c}. Descripción: {d}" for (_id, n, c, d) in items]
+        try:
+            raw_vectors = embed_texts(raw_texts)
+            if len(raw_vectors) == len(items):
+                return _process_batch_vectors(items, raw_vectors)
+            # Conteo distinto = el modelo no batchea de verdad → desactivar y caer a uno-por-uno.
+            logger.warning(
+                f"[Batch] El modelo de embeddings devolvió {len(raw_vectors)}/{len(items)} vectores; "
+                f"no soporta lote. Cambiando a uno-por-uno de aquí en adelante."
+            )
+            _batch_supported = False
+        except Exception as e:
+            # Error (posiblemente transitorio): caer a uno-por-uno SOLO este lote, sin desactivar.
+            logger.warning(f"[Batch] Falló el embed en lote ({e}); proceso este lote uno-por-uno.")
+
+    return _embed_items_one_by_one(items)
