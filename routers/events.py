@@ -26,6 +26,7 @@ def track_user_events(uid: str, req: UserEventsRequest):
     if not req.activities:
         return {"status": "ok"}
         
+    conn = None
     try:
         score_map = {'purchase': 5.0, 'like': 4.0, 'cart': 3.0, 'search': 2.0, 'click': 1.0, 'view': 1.0, 'view_product': 1.0, 'ignored': -0.5}
         with sqlite_lock:
@@ -63,8 +64,10 @@ def track_user_events(uid: str, req: UserEventsRequest):
             conn.execute("DELETE FROM user_vectors WHERE user_id = ?", (uid,))
             conn.execute("DELETE FROM user_vector_meta WHERE user_id = ?", (uid,))
             conn.commit()
-            conn.close()
     except Exception as e:
         logger.error(f"Error processing events for {uid}: {e}")
-        
+    finally:
+        if conn:
+            conn.close()  # SIEMPRE cierra (evita conexiones colgadas → 'database is locked')
+
     return {"status": "ok", "message": "Events processed and cache invalidated"}

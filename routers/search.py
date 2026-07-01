@@ -7,7 +7,8 @@ import struct
 import sqlite_vec
 from functools import lru_cache
 
-from core.database import get_db_dep, sqlite_lock
+from typing import Optional
+from core.database import get_db_dep, get_db_connection, sqlite_lock
 import core.firebase
 from core.genai_client import embed_text
 
@@ -26,9 +27,40 @@ from pydantic import BaseModel
 class SimulateRequest(BaseModel):
     prompt: str
 
+
+class SearchClickLog(BaseModel):
+    query: str
+    clicked_id: str
+    clicked_category: Optional[str] = ""
+    result_count: Optional[int] = 0
+
+
 from routers.home import build_cluster_fts_query
 
 router = APIRouter()
+
+
+@router.post("/api/log/search-click")
+def log_search_click(body: SearchClickLog):
+    """Registra un clic de búsqueda (query real → producto). Alimenta el aprendizaje de sinónimos
+    por co-clics y el CTR de búsqueda. Antes la app llamaba a este endpoint pero NO existía (404)."""
+    q = (body.query or "").strip().lower()
+    if not q or not body.clicked_id:
+        return {"status": "ok"}
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            try:
+                conn.execute(
+                    "INSERT INTO search_logs (query, clicked_id, clicked_category, result_count) VALUES (?, ?, ?, ?)",
+                    (q, body.clicked_id, body.clicked_category or "", body.result_count or 0)
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @router.get("/api/search")
 def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Connection = Depends(get_db_dep)):
@@ -344,101 +376,6 @@ def get_promotions(conn: sqlite3.Connection = Depends(get_db_dep)):
     rows = c.fetchall()
     return {"results": [dict(row) for row in rows]}
 
-@router.post("/api/simulate")
-def simulate_home_feed(req: SimulateRequest, conn: sqlite3.Connection = Depends(get_db_dep)):
-    """Simulador para probar el Cerebro Vectorial en el panel de Admin"""
-    try:
-        emb = embed_text(req.prompt, task_type="retrieval_query")
-        if not emb:
-            return {"status": "error", "error": "No se pudo generar el embedding."}
-
-        sim_vector = sqlite_vec.serialize_float32(emb)
-        c = conn.cursor()
-        
-        c.execute("""
-            SELECT a.anchor_id, m.title, m.subtitle, m.allowed_categories, m.exclude_rules, m.titles, vec_distance_cosine(a.embedding, ?) AS distance
-            FROM anchor_vectors a
-            JOIN anchor_metadata m ON a.anchor_id = m.anchor_id
-            ORDER BY distance ASC
-            LIMIT 3
-        """, (sim_vector,))
-        anchors = [dict(row) for row in c.fetchall()]
-        
-        feed_sections = []
-        for anchor in anchors:
-            c.execute("""
-                SELECT p.product_id, vec_distance_cosine(p.embedding, a.embedding) AS distance,
-                       s.name, s.category, s.price, s.imageUrl, s.storeId
-                FROM product_vectors p
-                JOIN anchor_vectors a ON a.anchor_id = ?
-                JOIN search_index s ON s.id = p.product_id
-                ORDER BY distance ASC
-                LIMIT 30
-            """, (anchor['anchor_id'],))
-            
-            raw_items = c.fetchall()
-            
-            allowed_categories = []
-            if anchor.get("allowed_categories"):
-                try: allowed_categories = [cat.lower() for cat in json.loads(anchor["allowed_categories"])]
-                except: pass
-                
-            exclude_rules = []
-            if anchor.get("exclude_rules"):
-                try: exclude_rules = json.loads(anchor["exclude_rules"])
-                except: pass
-                
-            items = []
-            for raw_row in raw_items:
-                row = dict(raw_row)
-                if row["distance"] > 0.8:
-                    continue
-                
-                cat = str(row.get("category", "")).lower()
-                if allowed_categories and cat not in allowed_categories:
-                    continue
-                
-                name_cat = (str(row.get("name", "")) + " " + cat).lower()
-                is_excluded = False
-                for rule in exclude_rules:
-                    if rule and rule.lower() in name_cat:
-                        is_excluded = True
-                        break
-                if is_excluded: continue
-                
-                items.append({
-                    "id": row["product_id"],
-                    "name": row["name"],
-                    "category": row["category"],
-                    "price": row["price"],
-                    "imageUrl": row["imageUrl"],
-                    "storeId": row["storeId"],
-                    "storeName": "Tienda Simulada"
-                })
-                if len(items) >= 10: break
-                
-            if items:
-                anchor_title = anchor.get("title", "Explorar")
-                if anchor.get("titles"):
-                    try:
-                        titles_list = json.loads(anchor["titles"])
-                        if titles_list:
-                            anchor_title = random.choice(titles_list)
-                    except: pass
-                    
-                feed_sections.append({
-                    "id": f"sim_anchor_{anchor['anchor_id']}",
-                    "title": anchor_title,
-                    "subtitle": anchor['subtitle'],
-                    "section_type": "interest",
-                    "items": items
-                })
-                
-        return {"results": feed_sections}
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return []
 
 @router.get("/api/recommendations/{uid}")
 def get_user_recommendations(uid: str, conn: sqlite3.Connection = Depends(get_db_dep)):

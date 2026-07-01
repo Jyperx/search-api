@@ -94,94 +94,6 @@ def get_admin_users_vectors(page: int = 1, limit: int = 10):
         traceback.print_exc()
         return {"status": "error", "message": str(e)}
 
-@router.post("/api/admin/cerebro/anchors")
-def create_manual_anchor(req: ManualAnchorRequest):
-    try:
-        import uuid
-        anchor_id = "M" + str(uuid.uuid4()).replace("-", "")[:8]
-        primary_title = req.titles[0] if req.titles else req.title
-        text = f"{primary_title} - {req.desc}"
-        
-        import time
-        emb = None
-        for attempt in range(3):
-            try:
-                emb = embed_text(text, task_type="retrieval_document")
-                break
-            except Exception as e:
-                time.sleep(1)
-
-        if not emb:
-            return {"status": "error", "message": "Failed to generate embedding"}
-
-        vector_blob = sqlite_vec.serialize_float32(emb)
-        with sqlite_lock:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute(
-                "INSERT INTO anchor_metadata (anchor_id, title, subtitle, section_type, allowed_categories, exclude_rules, titles, is_manual) VALUES (?, ?, ?, 'products', ?, ?, ?, 1)",
-                (anchor_id, primary_title, req.subtitle, json.dumps(req.allowed_categories), json.dumps(req.exclude_rules), json.dumps(req.titles))
-            )
-            c.execute(
-                "INSERT INTO anchor_vectors (anchor_id, embedding) VALUES (?, ?)",
-                (anchor_id, vector_blob)
-            )
-            conn.commit()
-            conn.close()
-        return {"status": "ok", "anchor_id": anchor_id}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@router.put("/api/admin/cerebro/anchors/{anchor_id}")
-def update_manual_anchor(anchor_id: str, req: ManualAnchorRequest):
-    try:
-        primary_title = req.titles[0] if req.titles else req.title
-        text = f"{primary_title} - {req.desc}"
-        
-        import time
-        emb = None
-        for attempt in range(3):
-            try:
-                emb = embed_text(text, task_type="retrieval_document")
-                break
-            except Exception as e:
-                time.sleep(1)
-
-        if not emb:
-            return {"status": "error", "message": "Failed to generate embedding"}
-
-        vector_blob = sqlite_vec.serialize_float32(emb)
-        with sqlite_lock:
-            conn = get_db_connection()
-            c = conn.cursor()
-            # Actualizar metadatos
-            c.execute("""
-                UPDATE anchor_metadata 
-                SET title=?, subtitle=?, allowed_categories=?, exclude_rules=?, titles=?
-                WHERE anchor_id=?
-            """, (primary_title, req.subtitle, json.dumps(req.allowed_categories), json.dumps(req.exclude_rules), json.dumps(req.titles), anchor_id))
-            # Actualizar vector
-            c.execute("UPDATE anchor_vectors SET embedding=? WHERE anchor_id=?", (vector_blob, anchor_id))
-            conn.commit()
-            conn.close()
-        return {"status": "ok"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@router.delete("/api/admin/cerebro/anchors/{anchor_id}")
-def delete_manual_anchor(anchor_id: str):
-    try:
-        with sqlite_lock:
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute("DELETE FROM anchor_metadata WHERE anchor_id = ?", (anchor_id,))
-            c.execute("DELETE FROM anchor_vectors WHERE anchor_id = ?", (anchor_id,))
-            conn.commit()
-            conn.close()
-        return {"status": "ok"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
 @router.get("/api/admin/cerebro")
 def get_admin_cerebro(page: int = 1, limit: int = 10, store_page: int = 1, anchor_page: int = 1):
     """Devuelve telemetrÔö£┬ía detallada del Cerebro Vectorial para el panel Admin."""
@@ -808,26 +720,6 @@ def build_concepts_endpoint(background_tasks: BackgroundTasks):
     background_tasks.add_task(_run)
     return {"status": "processing", "message": "Construyendo conceptos ambientales en background."}
 
-@router.post("/api/reset-clusters")
-def reset_clusters_to_defaults():
-    """Empuja los defaults del cÔö£Ôöédigo a Firestore, reemplazando los clÔö£Ôòæsteres existentes.
-    Ôö£├£til cuando los clÔö£Ôòæsteres en Firestore estÔö£├¡n desactualizados (sin storeCategories, etc.)."""
-    if not core.firebase.db:
-        raise HTTPException(status_code=500, detail="Firebase no estÔö£├¡ inicializado.")
-    try:
-        doc_ref = core.firebase.db.collection('config').document('algorithm')
-        doc_ref.set({"clusters": MACRO_CLUSTERS_CACHE}, merge=True)
-        return {
-            "message": f"├ö┬ú├á {len(MACRO_CLUSTERS_CACHE)} clÔö£Ôòæsteres reseteados a los defaults V3.2 correctamente.",
-            "clusters_pushed": list(MACRO_CLUSTERS_CACHE.keys())
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# ==========================================
-# ==========================================
-# WEBHOOKS PUSH PARA ACTUALIZAR Ôö£├¼NDICE (MINI-ALGOLIA)
-# ==========================================
 
 class ProductPayload(BaseModel):
     id: str
@@ -846,6 +738,7 @@ class ProductPayload(BaseModel):
 
 from core.config import global_sync_state
 from services.sync import do_sync_database, do_seed_anchors, do_sync_store, vector_worker_pool, async_index_product_vector, index_store_vector
+
 
 @router.post("/api/index/product")
 def webhook_product_upsert(payload: ProductPayload):
