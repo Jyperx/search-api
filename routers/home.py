@@ -16,6 +16,7 @@ from services.context_engine import (
     get_weather, compute_context_weights, build_context_vector,
     score_product, concept_distance, haversine_km, proximity_boost,
 )
+from data.curation import curation_action
 
 logger = logging.getLogger(__name__)
 
@@ -406,6 +407,14 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             best = scored[0][0]
             cutoff = min(best + 0.12, 0.6)
             relevant = [r for d, r in scored if d <= cutoff]
+            # Curación manual: quitar los que marcaste como "no van aquí" y mandar al final los "demote"
+            _kept, _demoted = [], []
+            for r in relevant:
+                act = curation_action("concept", concept_id, r["id"])
+                if act == "exclude":
+                    continue
+                (_demoted if act == "demote" else _kept).append(r)
+            relevant = _kept + _demoted
             items = take_from_pool(relevant, 6)
             if len(items) >= 3:
                 feed_sections.append({

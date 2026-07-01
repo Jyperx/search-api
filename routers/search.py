@@ -20,6 +20,7 @@ def _embed_query_cached(q: str) -> tuple:
     return tuple(embed_text(q, task_type="retrieval_query"))
 from data.clusters import MACRO_CLUSTERS_CACHE
 from data.synonyms import REVERSE_SYNONYMS, SYNONYMS
+from data.curation import curation_action
 from services.recommender import calculate_user_vector
 from routers.home import build_cluster_fts_query
 from pydantic import BaseModel
@@ -348,7 +349,16 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
     
     if category and q.strip():
         results = [r for r in results if r.get('category') == category or r.get('storeName') == category or r.get('storeCategory') == category]
-    
+
+    # Curación manual por búsqueda: quitar los marcados como "no relevante" y mandar al final los "demote"
+    _kept, _demoted = [], []
+    for r in results:
+        act = curation_action("query", safe_q, r.get("id"))
+        if act == "exclude":
+            continue
+        (_demoted if act == "demote" else _kept).append(r)
+    results = _kept + _demoted
+
     return {"results": results, "exact_match": exact_match}
 
 @router.get("/api/popular")

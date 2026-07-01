@@ -33,6 +33,8 @@ async def lifespan(app: FastAPI):
     load_ranking_weights(core.firebase.db)
     from routers.home import load_section_titles
     load_section_titles(core.firebase.db)
+    from data.curation import load_curation
+    load_curation(core.firebase.db)
 
     # 4.1 Construir conceptos ambientales si faltan (necesarios para el peso clima/hora)
     from data.concepts import DICCIONARIO_CONCEPTOS, _async_build_concept_dictionary

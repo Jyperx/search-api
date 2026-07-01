@@ -607,6 +607,38 @@ def reset_users_activity():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+
+# ─── Curación / Entrenador (corrección manual del ranking) ───────────────────
+class CurationPayload(BaseModel):
+    kind: str          # 'concept' | 'query'
+    key: str           # id del concepto (ej. ENV_MEDIODIA) o el texto de la búsqueda
+    product_id: str
+    action: str = "exclude"   # 'exclude' | 'demote'
+
+@router.get("/api/admin/curation")
+def get_curation():
+    from data.curation import CURATION
+    return {"status": "ok", "curation": CURATION}
+
+@router.post("/api/admin/curation")
+def add_curation(payload: CurationPayload):
+    from data.curation import set_curation
+    try:
+        set_curation(core.firebase.db, payload.kind, payload.key, payload.product_id, payload.action)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@router.delete("/api/admin/curation")
+def remove_curation(kind: str, key: str, product_id: str):
+    from data.curation import delete_curation
+    try:
+        delete_curation(core.firebase.db, kind, key, product_id)
+        return {"status": "ok"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 @router.get("/api/admin/clusters")
 def get_clusters():
     return {"status": "ok", "clusters": MACRO_CLUSTERS_CACHE}
