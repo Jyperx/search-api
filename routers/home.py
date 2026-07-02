@@ -86,6 +86,47 @@ def titles_for_category(cat_l: str):
     """Pool combinado: títulos manuales (admin) + creativos por defecto."""
     return (SECTION_TITLES_OVERRIDE.get(cat_l, []) + CATEGORY_TITLES.get(cat_l, [])) or None
 
+
+def rerank_by_coherence(rows, anchor_k: int = 4):
+    """Coherencia de sección: reordena una fila por cercanía a su 'tema dominante'.
+
+    El tema lo define el centroide (vector promedio) de los productos más afines al concepto.
+    Los outliers (ej. audífonos en una fila de comida) caen al fondo — NO se borran, solo bajan.
+    Es semántico: el hielo se queda en una fila de licores (está cerca del tema), aunque sea de otra
+    categoría; y una comida para preparar convive con la de restaurante porque ambas son 'comida'.
+
+    `rows` debe venir ya ordenado por cercanía al concepto (los primeros = ancla del tema)."""
+    if len(rows) < 4:
+        return rows  # muy pocos para hablar de un 'tema'
+    vecs = []
+    for r in rows:
+        e = r.get("embedding")
+        if not e:
+            return rows  # si falta algún vector, no arriesgamos el reordenado
+        vecs.append(np.frombuffer(e, dtype=np.float32))
+
+    def _centroid(vlist):
+        c = np.mean(vlist, axis=0)
+        n = float(np.linalg.norm(c))
+        return (c / n) if n > 0 else c
+
+    def _cos_dist(v, c):
+        vn = float(np.linalg.norm(v))
+        return (1.0 - float(np.dot(v, c) / vn)) if vn > 0 else 1.0
+
+    # 1) Centroide inicial de TODOS: la mayoría define el tema.
+    c0 = _centroid(vecs)
+    if float(np.linalg.norm(c0)) == 0:
+        return rows
+    # 2) Centroide ROBUSTO: recalcularlo con la mayoría más cercana, descartando los outliers
+    #    (así un audífono colado arriba no contamina el 'tema' de comida).
+    order = sorted(range(len(vecs)), key=lambda i: _cos_dist(vecs[i], c0))
+    keep_n = max(3, int(round(len(vecs) * 0.7)))
+    c1 = _centroid([vecs[i] for i in order[:keep_n]])
+
+    # 3) Reordenar todo por cercanía al tema dominante → los outliers caen al fondo.
+    return [r for r, _ in sorted(zip(rows, vecs), key=lambda p: _cos_dist(p[1], c1))]
+
 class HomeFeedRequest(BaseModel):
     activities: List[dict] = []
     lat: Optional[float] = None
@@ -407,6 +448,9 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             best = scored[0][0]
             cutoff = min(best + 0.12, 0.6)
             relevant = [r for d, r in scored if d <= cutoff]
+            # Coherencia de sección: el tema dominante manda; los outliers (audífonos en una fila
+            # de comida) caen al fondo automáticamente. No borra nada, solo reordena.
+            relevant = rerank_by_coherence(relevant)
             # Curación manual: quitar los que marcaste como "no van aquí" y mandar al final los "demote"
             _kept, _demoted = [], []
             for r in relevant:
