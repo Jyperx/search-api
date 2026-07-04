@@ -51,6 +51,8 @@ def calculate_time_decay_func(ts) -> float:
 def calculate_user_vector(activity_docs: list, current_hour: int, include_search: bool = False) -> bytes | None:
     product_ids = []
     decay_weights = {}
+    store_ids = []
+    store_weights = {}  # storeId -> peso (vistas a comercios, señal débil)
     search_queries = []  # (query, peso) — solo se embeben si include_search
 
     for doc in activity_docs:
@@ -65,6 +67,7 @@ def calculate_user_vector(activity_docs: list, current_hour: int, include_search
         elif act_type == 'cart': act_multiplier = 3.0
         elif act_type == 'search': act_multiplier = 2.0
         elif act_type in ('view', 'click', 'view_product'): act_multiplier = 1.0
+        elif act_type == 'view_store': act_multiplier = 0.5  # visitar una tienda pesa la mitad de ver un producto
         elif act_type == 'ignored': act_multiplier = -0.5
         
         if current_hour is not None and ts:
@@ -101,12 +104,18 @@ def calculate_user_vector(activity_docs: list, current_hour: int, include_search
             if p_id not in decay_weights:
                 product_ids.append(p_id)
             decay_weights[p_id] = decay_weights.get(p_id, 0.0) + weight
+        elif act_type == 'view_store' and data.get('storeId'):
+            s_id = data.get('storeId')
+            weight = calculate_time_decay_func(ts) * act_multiplier
+            if s_id not in store_weights:
+                store_ids.append(s_id)
+            store_weights[s_id] = store_weights.get(s_id, 0.0) + weight
         elif act_type == 'search' and data.get('query'):
             q = str(data.get('query')).strip()
             if q:
                 search_queries.append((q, calculate_time_decay_func(ts) * act_multiplier))
 
-    if not product_ids and not (include_search and search_queries):
+    if not product_ids and not store_ids and not (include_search and search_queries):
         return None
 
     vectors_map = {}
@@ -128,6 +137,26 @@ def calculate_user_vector(activity_docs: list, current_hour: int, include_search
             w = decay_weights[p_id]
             user_vector += (vec * w)
             total_weight += w
+
+    # Vistas a comercios → señal débil hacia el embedding de la tienda (los comercios también están vectorizados).
+    if store_ids:
+        try:
+            conn = get_db_connection()
+            placeholders = ','.join(['?'] * len(store_ids))
+            rows = conn.execute(
+                f"SELECT store_id, embedding FROM store_vectors WHERE store_id IN ({placeholders})",
+                tuple(store_ids)
+            ).fetchall()
+            conn.close()
+            for row in rows:
+                if row['embedding']:
+                    sv = np.frombuffer(row['embedding'], dtype=np.float32)
+                    w = store_weights.get(row['store_id'], 0.0)
+                    if w:
+                        user_vector += (sv * w)
+                        total_weight += w
+        except Exception as e:
+            logger.warning(f"[UserVector] No se pudieron cargar embeddings de tiendas: {e}")
 
     # Búsquedas → vector de gusto (intención fuerte). Solo las 2 más recientes/pesadas, por costo.
     if include_search and search_queries:

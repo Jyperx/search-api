@@ -10,9 +10,11 @@ router = APIRouter(prefix="/api/events", tags=["Events"])
 
 class ActivityEvent(BaseModel):
     productId: Optional[str] = None
-    type: str # 'view', 'cart', 'purchase', 'search', 'ignored'
+    type: str # 'view', 'cart', 'purchase', 'search', 'ignored', 'view_store'
     timestamp: str
     sectionId: Optional[str] = None
+    storeId: Optional[str] = None   # presente en 'view_store' (alimenta el vector vía recent_activity)
+    category: Optional[str] = None
 
 class UserEventsRequest(BaseModel):
     activities: List[ActivityEvent]
