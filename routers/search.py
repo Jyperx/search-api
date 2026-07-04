@@ -67,6 +67,8 @@ def log_search_click(body: SearchClickLog):
 def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Connection = Depends(get_db_dep)):
     """Busca en el índice FTS5 y Vectorial con Soporte para Categorías y Perfil de Usuario."""
     c = conn.cursor()
+    from datetime import datetime, timezone
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)  # para priorizar comercios destacados
 
     if not q.strip() and category:
         # Búsqueda pura por categoría (Filtro de pestañas del buscador).
@@ -87,14 +89,16 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
 
         # También las tiendas de esa categoría (para la sección de comercios)
         c.execute("""
-            SELECT id, type, storeId, name, category, description,
-                   price, icon, imageUrl, onSale, salePrice, likes, views, purchases,
-                   name as storeName, isOpen as storeIsOpen
-            FROM search_index
-            WHERE type = 'store' AND category = ?
-            ORDER BY CAST(likes AS INTEGER) DESC
+            SELECT si.id, si.type, si.storeId, si.name, si.category, si.description,
+                   si.price, si.icon, si.imageUrl, si.onSale, si.salePrice, si.likes, si.views, si.purchases,
+                   si.name as storeName, si.isOpen as storeIsOpen,
+                   (CASE WHEN fs.featured_until > ? THEN 1 ELSE 0 END) AS isFeatured
+            FROM search_index si
+            LEFT JOIN featured_stores fs ON fs.store_id = si.id
+            WHERE si.type = 'store' AND si.category = ?
+            ORDER BY isFeatured DESC, CAST(si.likes AS INTEGER) DESC
             LIMIT 30
-        """, (category,))
+        """, (now_ms, category))
         store_rows = [dict(row) for row in c.fetchall()]
 
         return {"results": store_rows + prod_rows, "exact_match": True}
@@ -280,13 +284,15 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName, p.isOpen as storeIsOpen, vec_distance_cosine(v.embedding, ?) AS distance
+                           s.name as storeName, p.isOpen as storeIsOpen, vec_distance_cosine(v.embedding, ?) AS distance,
+                           (CASE WHEN fs.featured_until > ? THEN 1 ELSE 0 END) AS isFeatured
                     FROM store_vectors v
                     JOIN search_index p ON p.id = v.store_id
                     LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
-                    ORDER BY distance ASC
+                    LEFT JOIN featured_stores fs ON fs.store_id = p.id
+                    ORDER BY isFeatured DESC, distance ASC
                     LIMIT 10
-                """, (query_vector,))
+                """, (query_vector, now_ms))
                 raw_stores = [dict(row) for row in c.fetchall()]
 
                 best_dist = 1.0

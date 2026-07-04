@@ -622,9 +622,11 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             if user_vector:
                 c.execute("""
                     SELECT s.store_id, vec_distance_cosine(s.embedding, ?) AS distance,
-                           st.name, st.category, st.description, st.imageUrl, st.likes, st.isOpen
+                           st.name, st.category, st.description, st.imageUrl, st.likes, st.isOpen,
+                           fs.featured_until
                     FROM store_vectors s
                     JOIN search_index st ON st.id = s.store_id AND st.type = 'store'
+                    LEFT JOIN featured_stores fs ON fs.store_id = s.store_id
                     WHERE CAST(st.isOpen AS INTEGER) = 1
                     ORDER BY distance ASC
                     LIMIT 200
@@ -632,14 +634,17 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
             else:
                 c.execute("""
                     SELECT s.store_id, 1.0 AS distance,
-                           st.name, st.category, st.description, st.imageUrl, st.likes, st.isOpen
+                           st.name, st.category, st.description, st.imageUrl, st.likes, st.isOpen,
+                           fs.featured_until
                     FROM store_vectors s
                     JOIN search_index st ON st.id = s.store_id AND st.type = 'store'
+                    LEFT JOIN featured_stores fs ON fs.store_id = s.store_id
                     WHERE CAST(st.isOpen AS INTEGER) = 1
                     ORDER BY CAST(st.likes AS INTEGER) DESC
                     LIMIT 200
                 """)
 
+            now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
             candidate_stores = []
             for raw_row in c.fetchall():
                 row = dict(raw_row)
@@ -653,6 +658,11 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                     d = haversine_km(req.lat, req.lng, loc[0], loc[1])
                     row["distance_km"] = round(d, 1)
                     row["final_score"] += proximity_boost(d)
+                # Comercio Destacado (pagado): marca para el badge. En el home ya tiene su
+                # propia sección "Comercios Destacados", así que aquí NO forzamos el ranking
+                # (evita duplicarlo arriba); la prioridad fuerte va en las búsquedas.
+                fu = row.get("featured_until") or 0
+                row["is_featured"] = bool(fu and fu > now_ms)
                 candidate_stores.append(row)
 
             candidate_stores.sort(key=lambda x: x["final_score"], reverse=True)
@@ -677,6 +687,7 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                         "open": True,
                         "type": "store",
                         "distance_km": row.get("distance_km"),
+                        "isFeatured": row.get("is_featured", False),
                     })
                     category_counts[cat] = category_counts.get(cat, 0) + 1
 

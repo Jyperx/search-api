@@ -866,6 +866,26 @@ def index_store_status(store_id: str, isOpen: bool = True):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+@router.patch("/api/index/store/{store_id}/featured")
+def index_store_featured(store_id: str, until: int = 0):
+    """Marca (o desmarca) un comercio como destacado. until = epoch ms; 0 lo quita."""
+    try:
+        with sqlite_lock:
+            conn = get_db_connection()
+            if until and until > 0:
+                conn.execute(
+                    "INSERT INTO featured_stores (store_id, featured_until) VALUES (?, ?) "
+                    "ON CONFLICT(store_id) DO UPDATE SET featured_until = excluded.featured_until",
+                    (store_id, int(until))
+                )
+            else:
+                conn.execute("DELETE FROM featured_stores WHERE store_id = ?", (store_id,))
+            conn.commit()
+            conn.close()
+        return {"status": "ok", "store_id": store_id, "featured_until": until}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @router.get("/api/admin/sync-status")
 def get_sync_status():
     return global_sync_state

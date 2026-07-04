@@ -60,6 +60,15 @@ def init_db():
                 embedding float[768]
             )
         ''')
+
+        # Comercios destacados (paquete "Comercio Destacado"). Tabla aparte para no tocar el FTS5.
+        # featured_until = epoch en ms; el comercio es destacado si featured_until > ahora.
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS featured_stores (
+                store_id TEXT PRIMARY KEY,
+                featured_until INTEGER DEFAULT 0
+            )
+        ''')
         
         c.execute('''
             CREATE TABLE IF NOT EXISTS anchor_metadata (
