@@ -290,7 +290,7 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                     JOIN search_index p ON p.id = v.store_id
                     LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
                     LEFT JOIN featured_stores fs ON fs.store_id = p.id
-                    ORDER BY isFeatured DESC, distance ASC
+                    ORDER BY distance ASC
                     LIMIT 10
                 """, (query_vector, now_ms))
                 raw_stores = [dict(row) for row in c.fetchall()]
@@ -328,6 +328,11 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                         
         final_stores = [r for r in results if r.get('type') == 'store']
         final_products = [r for r in results if r.get('type') != 'store']
+
+        # Entre las tiendas RELEVANTES (ya filtradas por el umbral de distancia), los destacados
+        # van primero. Orden ESTABLE: conserva el orden por relevancia dentro de cada grupo, y
+        # un destacado irrelevante ya quedó fuera por el umbral → no secuestra la búsqueda.
+        final_stores.sort(key=lambda r: 0 if r.get('isFeatured') else 1)
 
         # Para consultas de intención (no exactas), evitar que UNA categoría acapare,
         # PERO sin romper la relevancia: se conserva el orden (lo más relevante arriba) y
