@@ -332,20 +332,43 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                         results.append(v_item)
                         seen_ids.add(v_item["id"])
                         
-        # Marca isFeatured en TODAS las tiendas del resultado, vengan de FTS/LIKE/fuzzy o del
-        # vector (una sola consulta a featured_stores). Antes solo la ruta vector lo traía, así
-        # que un destacado que entraba por coincidencia de NOMBRE se quedaba sin badge.
+        final_stores = [r for r in results if r.get('type') == 'store']
+        final_products = [r for r in results if r.get('type') != 'store']
+
+        # Comercios DERIVADOS de los productos que matchearon: si busco "burguer" y varios
+        # negocios venden hamburguesas, esos negocios salen en Puntos Cercanos aunque su
+        # NOMBRE no coincida (ej. "El Rey del Perro" vendiendo burguers).
         try:
-            fs_rows = c.execute("SELECT store_id FROM featured_stores WHERE featured_until > ?", (now_ms,)).fetchall()
-            featured_ids = {row['store_id'] for row in fs_rows}
-            for r in results:
-                if r.get('type') == 'store':
-                    r['isFeatured'] = 1 if r['id'] in featured_ids else 0
+            have_ids = {r['id'] for r in final_stores}
+            prod_store_ids = []
+            for p in final_products:  # vienen por relevancia → se conserva ese orden
+                sid = p.get('storeId')
+                if sid and sid not in have_ids and sid not in prod_store_ids:
+                    prod_store_ids.append(sid)
+            if prod_store_ids:
+                ph = ','.join(['?'] * len(prod_store_ids))
+                rows_derived = c.execute(f"""
+                    SELECT id, type, storeId, name, category, description,
+                           price, icon, imageUrl, onSale, salePrice, likes, views, purchases,
+                           name as storeName, isOpen as storeIsOpen, category as storeCategory
+                    FROM search_index
+                    WHERE type = 'store' AND id IN ({ph})
+                """, tuple(prod_store_ids)).fetchall()
+                order_map = {sid: i for i, sid in enumerate(prod_store_ids)}
+                derived = sorted([dict(row) for row in rows_derived], key=lambda r: order_map.get(r['id'], 999))
+                final_stores.extend(derived)
         except Exception:
             pass
 
-        final_stores = [r for r in results if r.get('type') == 'store']
-        final_products = [r for r in results if r.get('type') != 'store']
+        # Marca isFeatured en TODAS las tiendas (de FTS/LIKE/fuzzy, del vector o derivadas
+        # de productos) con una sola consulta a featured_stores.
+        try:
+            fs_rows = c.execute("SELECT store_id FROM featured_stores WHERE featured_until > ?", (now_ms,)).fetchall()
+            featured_ids = {row['store_id'] for row in fs_rows}
+            for r in final_stores:
+                r['isFeatured'] = 1 if r['id'] in featured_ids else 0
+        except Exception:
+            pass
 
         # Entre las tiendas RELEVANTES (ya filtradas por el umbral de distancia), los destacados
         # van primero. Orden ESTABLE: conserva el orden por relevancia dentro de cada grupo, y
