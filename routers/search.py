@@ -326,6 +326,18 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                         results.append(v_item)
                         seen_ids.add(v_item["id"])
                         
+        # Marca isFeatured en TODAS las tiendas del resultado, vengan de FTS/LIKE/fuzzy o del
+        # vector (una sola consulta a featured_stores). Antes solo la ruta vector lo traía, así
+        # que un destacado que entraba por coincidencia de NOMBRE se quedaba sin badge.
+        try:
+            fs_rows = c.execute("SELECT store_id FROM featured_stores WHERE featured_until > ?", (now_ms,)).fetchall()
+            featured_ids = {row['store_id'] for row in fs_rows}
+            for r in results:
+                if r.get('type') == 'store':
+                    r['isFeatured'] = 1 if r['id'] in featured_ids else 0
+        except Exception:
+            pass
+
         final_stores = [r for r in results if r.get('type') == 'store']
         final_products = [r for r in results if r.get('type') != 'store']
 
