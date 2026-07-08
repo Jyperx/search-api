@@ -306,14 +306,20 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                 if len(results) == 0:
                     exact_match = False
 
-                dynamic_thresh = min(best_dist + 0.15, 0.65)
-                
+                # Umbral RELATIVO apretado + techo absoluto: solo lo realmente parecido.
+                # (El 0.65 anterior dejaba pasar tiendas de otra categoría — ej. "burguer"
+                # traía barberías/ropa empujadas por el 15% del perfil de clicks del usuario.)
+                dynamic_thresh = min(best_dist + 0.10, 0.50)
+                # Tiendas: embeddings amplios (nombre+categoría+descr.) → aún más estricto.
+                store_thresh = min(best_dist + 0.06, 0.45)
+
                 vec_products = [r for r in raw_products if r['distance'] <= dynamic_thresh]
-                vec_stores = [r for r in raw_stores if r['distance'] <= dynamic_thresh]
-                
-                if not exact_match:
-                    vec_products = vec_products[:4]
-                    vec_stores = vec_stores[:2]
+                vec_stores = [r for r in raw_stores if r['distance'] <= store_thresh]
+
+                # Cap SIEMPRE (antes con match exacto el vector podía inundar los resultados
+                # con complementos poco relacionados: buñuelos para "burguer", etc.)
+                vec_products = vec_products[:6] if exact_match else vec_products[:4]
+                vec_stores = vec_stores[:3] if exact_match else vec_stores[:2]
                 
                 vec_all = vec_stores + vec_products
                 vec_all.sort(key=lambda x: x['distance'])
