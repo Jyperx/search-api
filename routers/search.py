@@ -288,7 +288,7 @@ def search(q: str = "", category: str = "", history: str = "", conn: sqlite3.Con
                            (CASE WHEN fs.featured_until > ? THEN 1 ELSE 0 END) AS isFeatured
                     FROM store_vectors v
                     JOIN search_index p ON p.id = v.store_id
-                    LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    LEFT JOIN (SELECT id, name, category FROM search_index WHERE type='store') s ON s.id = p.storeId
                     LEFT JOIN featured_stores fs ON fs.store_id = p.id
                     ORDER BY distance ASC
                     LIMIT 10
@@ -420,9 +420,9 @@ def get_popular_products(conn: sqlite3.Connection = Depends(get_db_dep)):
     c.execute("""
         SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-               s.name as storeName
+               s.name as storeName, s.category as storeCategory
         FROM search_index p
-        LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+        LEFT JOIN (SELECT id, name, category FROM search_index WHERE type='store') s ON s.id = p.storeId
         WHERE p.type = 'product'
         ORDER BY CAST(p.likes AS INTEGER) DESC, CAST(p.views AS INTEGER) DESC, RANDOM()
         LIMIT 6
@@ -477,10 +477,10 @@ def get_user_recommendations(uid: str, conn: sqlite3.Connection = Depends(get_db
             c.execute("""
                 SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                        p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                       s.name as storeName, vec_distance_cosine(v.embedding, ?) AS distance
+                       s.name as storeName, s.category as storeCategory, vec_distance_cosine(v.embedding, ?) AS distance
                 FROM product_vectors v
                 JOIN search_index p ON p.id = v.product_id AND p.type = 'product'
-                LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                LEFT JOIN (SELECT id, name, category FROM search_index WHERE type='store') s ON s.id = p.storeId
                 ORDER BY distance ASC
                 LIMIT 4
             """, (user_vector,))
@@ -494,9 +494,9 @@ def get_user_recommendations(uid: str, conn: sqlite3.Connection = Depends(get_db
                 query = f"""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName
+                           s.name as storeName, s.category as storeCategory
                     FROM search_index p
-                    LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    LEFT JOIN (SELECT id, name, category FROM search_index WHERE type='store') s ON s.id = p.storeId
                     WHERE p.type = 'product' AND p.id NOT IN ({placeholders})
                     ORDER BY CAST(p.likes AS INTEGER) DESC
                     LIMIT ?
@@ -506,9 +506,9 @@ def get_user_recommendations(uid: str, conn: sqlite3.Connection = Depends(get_db
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName
+                           s.name as storeName, s.category as storeCategory
                     FROM search_index p
-                    LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    LEFT JOIN (SELECT id, name, category FROM search_index WHERE type='store') s ON s.id = p.storeId
                     WHERE p.type = 'product'
                     ORDER BY CAST(p.likes AS INTEGER) DESC
                     LIMIT ?
@@ -518,9 +518,9 @@ def get_user_recommendations(uid: str, conn: sqlite3.Connection = Depends(get_db
         c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                    p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                   s.name as storeName
+                   s.name as storeName, s.category as storeCategory
             FROM search_index p
-            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+            LEFT JOIN (SELECT id, name, category FROM search_index WHERE type='store') s ON s.id = p.storeId
             WHERE p.type = 'product'
             ORDER BY RANDOM()
             LIMIT 4
@@ -530,9 +530,9 @@ def get_user_recommendations(uid: str, conn: sqlite3.Connection = Depends(get_db
         c.execute("""
             SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                    p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                   s.name as storeName
+                   s.name as storeName, s.category as storeCategory
             FROM search_index p
-            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') s ON s.id = p.storeId
+            LEFT JOIN (SELECT id, name, category FROM search_index WHERE type='store') s ON s.id = p.storeId
             WHERE p.type = 'product'
             ORDER BY CAST(p.purchases AS INTEGER) DESC, CAST(p.likes AS INTEGER) DESC
             LIMIT 4

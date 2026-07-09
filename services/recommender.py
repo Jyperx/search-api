@@ -231,10 +231,10 @@ def find_similar_users_products(user_id: str, user_vector: bytes, top_k: int = 5
             SELECT uac.product_id, SUM(uac.score) as total_score,
                    s.id, s.name, s.category, s.description, s.price, s.icon, s.imageUrl,
                    s.onSale, s.salePrice, s.likes, s.views, s.purchases, s.storeId,
-                   st.name as storeName
+                   st.name as storeName, st.category as storeCategory
             FROM user_activity_cache uac
             JOIN search_index s ON s.id = uac.product_id AND s.type = 'product'
-            LEFT JOIN (SELECT id, name FROM search_index WHERE type='store') st ON st.id = s.storeId
+            LEFT JOIN (SELECT id, name, category FROM search_index WHERE type='store') st ON st.id = s.storeId
             WHERE uac.user_id IN ({placeholders})
             AND uac.score > 0
             AND CAST(s.available AS INTEGER) = 1

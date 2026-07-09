@@ -564,9 +564,9 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName
+                           s.name as storeName, s.category as storeCategory
                     FROM search_index p
-                    LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    LEFT JOIN (SELECT id, name, isOpen, category FROM search_index WHERE type='store') s ON s.id = p.storeId
                     WHERE p.type = 'product' AND p.category = ? AND CAST(p.available AS INTEGER) = 1
                     AND CAST(s.isOpen AS INTEGER) = 1
                     ORDER BY RANDOM()
@@ -596,9 +596,9 @@ def get_dynamic_home_feed(uid: str, req: HomeFeedRequest):
                 c.execute("""
                     SELECT p.id, p.type, p.storeId, p.name, p.category, p.description,
                            p.price, p.icon, p.imageUrl, p.onSale, p.salePrice, p.likes, p.views, p.purchases,
-                           s.name as storeName
+                           s.name as storeName, s.category as storeCategory
                     FROM search_index p
-                    LEFT JOIN (SELECT id, name, isOpen FROM search_index WHERE type='store') s ON s.id = p.storeId
+                    LEFT JOIN (SELECT id, name, isOpen, category FROM search_index WHERE type='store') s ON s.id = p.storeId
                     WHERE p.type = 'product' AND CAST(p.available AS INTEGER) = 1 AND CAST(s.isOpen AS INTEGER) = 1
                     ORDER BY CAST(p.purchases AS INTEGER) DESC, CAST(p.likes AS INTEGER) DESC, RANDOM()
                     LIMIT 40
