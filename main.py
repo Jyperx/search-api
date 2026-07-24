@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from contextlib import asynccontextmanager
+import asyncio
 
 from core.database import init_db
 from core.firebase import init_firebase, listen_config
@@ -55,15 +56,21 @@ async def lifespan(app: FastAPI):
     from data.curation import load_curation
     load_curation(core.firebase.db)
 
-    # 4.1 Construir conceptos ambientales si faltan (necesarios para el peso clima/hora)
+    # 4.1 Construir conceptos ambientales si faltan (necesarios para el peso clima/hora).
+    # Es lo ÚNICO lento del arranque (llama al LLM) → se hace en SEGUNDO PLANO para no
+    # bloquear el servidor. Mientras se construye, el ranking usa peso de clima/hora neutro
+    # (resultados válidos, solo un poco menos afinados) hasta que termine (una vez).
     from data.concepts import DICCIONARIO_CONCEPTOS, _async_build_concept_dictionary
     if not DICCIONARIO_CONCEPTOS:
-        try:
-            print("[Conceptos] Vacío. Construyendo diccionario de conceptos ambientales...")
-            await _async_build_concept_dictionary()
-            cargar_conceptos_en_memoria()
-        except Exception as e:
-            print(f"[Conceptos] No se pudieron construir al inicio: {e}")
+        async def _build_concepts_bg():
+            try:
+                print("[Conceptos] Vacío. Construyendo en segundo plano...")
+                await _async_build_concept_dictionary()
+                cargar_conceptos_en_memoria()
+                print("[Conceptos] Diccionario construido y cargado.")
+            except Exception as e:
+                print(f"[Conceptos] No se pudieron construir: {e}")
+        asyncio.create_task(_build_concepts_bg())
 
     # 5. Scheduler: tareas automáticas en background (solo el worker líder lo ARRANCA).
     is_leader = _try_become_leader()
