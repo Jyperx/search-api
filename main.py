@@ -13,6 +13,25 @@ from routers.home import router as home_router
 from routers.events import router as events_router
 from routers.search import router as search_router
 from routers.admin import router as admin_router
+
+# ── Elección de worker LÍDER para tareas de fondo ──────────────────────────────
+# Con `uvicorn --workers N`, el lifespan corre en CADA worker → el scheduler se
+# ejecutaría N veces (retry embeddings, reconcile, etc. duplicados). Un flock elige UN
+# único líder entre los workers del mismo contenedor: solo ese corre las tareas de fondo.
+# Se adquiere DENTRO del lifespan (cada worker abre su propio descriptor) para que un
+# posible fork de uvicorn no herede el lock y crea que todos son líderes.
+_leader_lock_fh = None  # se conserva abierto para mantener el lock vivo
+
+def _try_become_leader() -> bool:
+    global _leader_lock_fh
+    try:
+        import fcntl
+        _leader_lock_fh = open("/tmp/punto_scheduler.lock", "w")
+        fcntl.flock(_leader_lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except Exception:
+        return False
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # 1. Inicializar base de datos SQLite y tablas vectoriales
@@ -46,7 +65,8 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"[Conceptos] No se pudieron construir al inicio: {e}")
 
-    # 5. Scheduler: tareas automáticas en background
+    # 5. Scheduler: tareas automáticas en background (solo el worker líder lo ARRANCA).
+    is_leader = _try_become_leader()
     try:
         from apscheduler.schedulers.background import BackgroundScheduler
         from services.sync import retry_vector_queue_task, reconcile_catalog
@@ -89,9 +109,13 @@ async def lifespan(app: FastAPI):
         # así que se hace 1 vez/día para minimizar lecturas (no es urgente: el borrado en la app
         # ya limpia su propio fantasma al instante).
         scheduler.add_job(reconcile_catalog, 'interval', hours=24, id='reconcile_catalog', replace_existing=True)
-        scheduler.start()
-        app.state.scheduler = scheduler
-        print("[Scheduler] Iniciado: vectores (10 min) + sinónimos (6 h) + clusters (24 h) + pesos (12 h) + reconcile (6 h).")
+        # Solo el worker LÍDER arranca el scheduler → evita tareas duplicadas con --workers N.
+        if is_leader:
+            scheduler.start()
+            app.state.scheduler = scheduler
+            print("[Scheduler] Iniciado (worker líder): vectores (10 min) + sinónimos (6 h) + clusters (24 h) + pesos (12 h) + reconcile (24 h).")
+        else:
+            print("[Scheduler] Worker secundario: no arranca tareas de fondo (ya las corre el líder).")
     except Exception as e:
         print(f"[Scheduler] No se pudo iniciar: {e}")
 
